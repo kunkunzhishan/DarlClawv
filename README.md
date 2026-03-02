@@ -50,9 +50,9 @@ Examples:
 
 - The worker executes inside a sandbox.
 - If blocked by permissions, it requests escalation.
-- `safe`: fully user-approved (no automatic approval by the model).
-- `workspace`: partially model-approved.
-- `full`: fully model-approved.
+- `safe`: fully user-approved (no automatic approval by the ai).
+- `workspace`: partially ai-approved.
+- `full`: fully ai-approved.
 
 ## Quick Start
 
