@@ -1,7 +1,7 @@
 import path from "node:path";
-import { appendFile } from "node:fs/promises";
+import { open, rename, stat, unlink, writeFile } from "node:fs/promises";
 import type { AppConfig } from "../../types/contracts.js";
-import { ensureDir, fileExists, readText, writeText } from "../../utils/fs.js";
+import { ensureDir, fileExists, readText } from "../../utils/fs.js";
 
 const VECTOR_DB_VERSION = 1;
 const DEFAULT_VECTOR_DIMENSION = 96;
@@ -12,7 +12,6 @@ const DEFAULT_TEMPORARY_RETAIN_AFTER_PROMOTE = 12;
 const DEFAULT_TEMPORARY_MAX_ENTRIES = 200;
 const DEFAULT_VECTOR_COMPACTION_SIMILARITY = 0.97;
 const DEFAULT_VECTOR_MAX_RECORDS = 5000;
-const DEFAULT_EMBEDDING_PROVIDER = "deterministic";
 const DEFAULT_EMBEDDING_BASE_URL = "https://open.bigmodel.cn/api/paas/v4";
 const DEFAULT_EMBEDDING_MODEL = "embedding-3";
 const DEFAULT_EMBEDDING_API_KEY_ENV = "EMBEDDING_API_KEY";
@@ -22,9 +21,11 @@ const DEFAULT_SPLITTER_ENABLED = true;
 const DEFAULT_SPLITTER_MAX_CHARS = 400;
 const DEFAULT_SPLITTER_OVERLAP_CHARS = 60;
 const DEFAULT_SPLITTER_MIN_CHARS = 20;
+const FILE_LOCK_RETRY_MS = 25;
+const FILE_LOCK_TIMEOUT_MS = 30000;
+const FILE_LOCK_STALE_MS = 120000;
 
 export type MemoryPaths = {
-  globalPath: string;
   temporaryContextPath: string;
   personalVectorPath: string;
   groupVectorPath: string;
@@ -51,7 +52,7 @@ export type MemoryRuntimeOptions = {
   splitterMinChunkChars: number;
 };
 
-export type LocalMemoryEntry = {
+export type TemporaryContextEntry = {
   ts: string;
   runId: string;
   agentId: string;
@@ -59,15 +60,6 @@ export type LocalMemoryEntry = {
   status: "ok" | "failed";
   outputSummary: string;
 };
-
-export type GlobalMemoryEntry = {
-  ts: string;
-  sourceAgentId: string;
-  runId: string;
-  memory: string;
-};
-
-export type TemporaryContextEntry = LocalMemoryEntry;
 
 export type VectorMemoryEntry = {
   id: string;
@@ -111,6 +103,15 @@ function trimSummary(text: string, max = 800): string {
   return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
 }
 
+function parseTimeMs(value: string): number {
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function toPositiveInt(value: unknown, fallback: number): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n) || n <= 0) {
@@ -135,21 +136,6 @@ function toRatio(value: unknown, fallback: number): number {
   return Math.max(0, Math.min(1, n));
 }
 
-function parseJsonlLines<T>(raw: string): T[] {
-  return raw
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line) as T;
-      } catch {
-        return null;
-      }
-    })
-    .filter((item): item is T => item !== null);
-}
-
 function cosineSimilarity(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
   if (len === 0) {
@@ -169,6 +155,63 @@ function cosineSimilarity(a: number[], b: number[]): number {
     return 0;
   }
   return dot / (Math.sqrt(aNorm) * Math.sqrt(bNorm));
+}
+
+function collectLexicalTokens(query: string): string[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+
+  const tokens = new Set<string>();
+  const wordParts = normalized
+    .split(/[\s,.;!?，。！？；:、"'`~!@#$%^&*()_+\-=[\]{}|<>\\/]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  for (const part of wordParts) {
+    if (part.length >= 2) {
+      tokens.add(part);
+    }
+  }
+
+  const cjkChunks = normalized.match(/[\u3400-\u9fff]+/g) || [];
+  for (const chunk of cjkChunks) {
+    const chars = Array.from(chunk);
+    if (chars.length >= 2) {
+      for (let i = 0; i <= chars.length - 2; i += 1) {
+        tokens.add(chars.slice(i, i + 2).join(""));
+      }
+    } else if (chars.length === 1) {
+      tokens.add(chars[0]);
+    }
+    if (chars.length >= 3) {
+      for (let i = 0; i <= chars.length - 3; i += 1) {
+        tokens.add(chars.slice(i, i + 3).join(""));
+      }
+    }
+  }
+
+  return [...tokens].slice(0, 24);
+}
+
+function lexicalMatchBoost(query: string, text: string): number {
+  const q = query.trim().toLowerCase();
+  const t = text.trim().toLowerCase();
+  if (!q || !t) {
+    return 0;
+  }
+  let score = 0;
+  if (t.includes(q)) {
+    score += 0.45;
+  }
+  const tokens = collectLexicalTokens(q);
+  for (const token of tokens) {
+    if (t.includes(token)) {
+      score += token.length >= 3 ? 0.09 : 0.06;
+    }
+  }
+  return Math.min(0.8, score);
 }
 
 function deterministicEmbedding(text: string, dimension: number): number[] {
@@ -297,6 +340,61 @@ async function ensureMemoryPath(pathValue: string): Promise<void> {
   await ensureDir(path.dirname(pathValue));
 }
 
+async function writeTextAtomic(pathValue: string, content: string): Promise<void> {
+  await ensureMemoryPath(pathValue);
+  const tempPath = `${pathValue}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await writeFile(tempPath, content, "utf8");
+    await rename(tempPath, pathValue);
+  } finally {
+    await unlink(tempPath).catch(() => undefined);
+  }
+}
+
+async function archiveCorruptFile(pathValue: string): Promise<void> {
+  const archived = `${pathValue}.corrupt-${Date.now()}`;
+  await rename(pathValue, archived).catch(() => undefined);
+}
+
+async function withFileLock<T>(pathValue: string, fn: () => Promise<T>): Promise<T> {
+  const lockPath = `${pathValue}.lock`;
+  await ensureMemoryPath(lockPath);
+  const deadline = Date.now() + FILE_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      const handle = await open(lockPath, "wx");
+      await handle.writeFile(String(process.pid), "utf8").catch(() => undefined);
+      await handle.close();
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const lockStat = await stat(lockPath);
+        const age = Date.now() - lockStat.mtimeMs;
+        if (age >= FILE_LOCK_STALE_MS) {
+          await unlink(lockPath).catch(() => undefined);
+          continue;
+        }
+      } catch {
+        // Ignore stat/unlink race and retry.
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for memory file lock: ${lockPath}`);
+      }
+      await sleep(FILE_LOCK_RETRY_MS);
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    await unlink(lockPath).catch(() => undefined);
+  }
+}
+
 async function readJsonArray<T>(filePath: string): Promise<T[]> {
   if (!(await fileExists(filePath))) {
     return [];
@@ -305,14 +403,17 @@ async function readJsonArray<T>(filePath: string): Promise<T[]> {
     const raw = await readText(filePath);
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch {
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      await archiveCorruptFile(filePath);
+    }
     return [];
   }
 }
 
 async function writeJsonArray<T>(filePath: string, items: T[]): Promise<void> {
   await ensureMemoryPath(filePath);
-  await writeText(filePath, JSON.stringify(items, null, 2));
+  await writeTextAtomic(filePath, JSON.stringify(items, null, 2));
 }
 
 async function readVectorStore(pathValue: string, dimension: number): Promise<VectorStoreDocument> {
@@ -348,7 +449,10 @@ async function readVectorStore(pathValue: string, dimension: number): Promise<Ve
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : nowIso(),
       records
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      await archiveCorruptFile(pathValue);
+    }
     return {
       version: VECTOR_DB_VERSION,
       dimension,
@@ -360,7 +464,7 @@ async function readVectorStore(pathValue: string, dimension: number): Promise<Ve
 
 async function writeVectorStore(pathValue: string, doc: VectorStoreDocument): Promise<void> {
   await ensureMemoryPath(pathValue);
-  await writeText(
+  await writeTextAtomic(
     pathValue,
     JSON.stringify(
       {
@@ -417,29 +521,31 @@ async function appendVectorEntries(args: {
     return 0;
   }
 
-  const doc = await readVectorStore(args.pathValue, args.options.vectorDimension);
-  const inserted: VectorMemoryEntry[] = [];
-  for (const entry of valid) {
-    inserted.push({
-      ...toVectorEntry({
-        scope: args.scope,
-        ts: entry.ts,
-        runId: entry.runId,
-        text: entry.text,
-        agentId: entry.agentId,
-        dimension: doc.dimension
-      }),
-      vector: await embedText(entry.text, args.options, doc.dimension)
-    });
-  }
-  const next = [...doc.records, ...inserted];
+  return await withFileLock(args.pathValue, async () => {
+    const doc = await readVectorStore(args.pathValue, args.options.vectorDimension);
+    const inserted: VectorMemoryEntry[] = [];
+    for (const entry of valid) {
+      inserted.push({
+        ...toVectorEntry({
+          scope: args.scope,
+          ts: entry.ts,
+          runId: entry.runId,
+          text: entry.text,
+          agentId: entry.agentId,
+          dimension: doc.dimension
+        }),
+        vector: await embedText(entry.text, args.options, doc.dimension)
+      });
+    }
+    const next = [...doc.records, ...inserted];
 
-  const trimmed = next.length > args.maxRecords ? next.slice(next.length - args.maxRecords) : next;
-  await writeVectorStore(args.pathValue, {
-    ...doc,
-    records: trimmed
+    const trimmed = next.length > args.maxRecords ? next.slice(next.length - args.maxRecords) : next;
+    await writeVectorStore(args.pathValue, {
+      ...doc,
+      records: trimmed
+    });
+    return inserted.length;
   });
-  return inserted.length;
 }
 
 async function searchVectorEntries(args: {
@@ -465,7 +571,7 @@ async function searchVectorEntries(args: {
       agentId: record.agentId,
       text: record.text,
       scope: record.scope,
-      score: cosineSimilarity(queryVector, record.vector)
+      score: cosineSimilarity(queryVector, record.vector) + lexicalMatchBoost(query, record.text)
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(1, args.topK));
@@ -477,40 +583,40 @@ async function compactVectorStore(args: {
   similarityThreshold: number;
   maxRecords: number;
 }): Promise<{ before: number; after: number }> {
-  const doc = await readVectorStore(args.pathValue, args.dimension);
-  const before = doc.records.length;
-  if (before <= 1) {
-    return { before, after: before };
-  }
-
-  const ordered = [...doc.records].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
-  const kept: VectorMemoryEntry[] = [];
-  for (const candidate of ordered) {
-    const isNearDuplicate = kept.some((existing) => cosineSimilarity(existing.vector, candidate.vector) >= args.similarityThreshold);
-    if (!isNearDuplicate) {
-      kept.push(candidate);
+  return await withFileLock(args.pathValue, async () => {
+    const doc = await readVectorStore(args.pathValue, args.dimension);
+    const before = doc.records.length;
+    if (before <= 1) {
+      return { before, after: before };
     }
-    if (kept.length >= args.maxRecords) {
-      break;
-    }
-  }
 
-  const normalized = kept.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
-  await writeVectorStore(args.pathValue, {
-    ...doc,
-    records: normalized
+    const ordered = [...doc.records].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+    const kept: VectorMemoryEntry[] = [];
+    for (const candidate of ordered) {
+      const isNearDuplicate = kept.some((existing) => cosineSimilarity(existing.vector, candidate.vector) >= args.similarityThreshold);
+      if (!isNearDuplicate) {
+        kept.push(candidate);
+      }
+      if (kept.length >= args.maxRecords) {
+        break;
+      }
+    }
+
+    const normalized = kept.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+    await writeVectorStore(args.pathValue, {
+      ...doc,
+      records: normalized
+    });
+    return { before, after: normalized.length };
   });
-  return { before, after: normalized.length };
 }
 
 export function resolveMemoryPaths(appConfig: AppConfig, agentId: string): MemoryPaths {
   const agentRoot = path.resolve(appConfig.memory.local_store_root, agentId);
-  const globalRoot = path.resolve(path.dirname(appConfig.memory.global_store_path));
   return {
-    globalPath: path.resolve(appConfig.memory.global_store_path),
     temporaryContextPath: path.join(agentRoot, "temporary-context.json"),
     personalVectorPath: path.join(agentRoot, "personal-vector.json"),
-    groupVectorPath: path.join(globalRoot, "group-vector.json")
+    groupVectorPath: path.resolve(appConfig.memory.global_vector_store_path)
   };
 }
 
@@ -555,35 +661,18 @@ export function resolveMemoryRuntimeOptions(appConfig: AppConfig): MemoryRuntime
   };
 }
 
-export async function appendGlobalMemory(paths: MemoryPaths, entries: GlobalMemoryEntry[]): Promise<number> {
-  if (entries.length === 0) {
-    return 0;
-  }
-  await ensureMemoryPath(paths.globalPath);
-  const payload = entries.map((entry) => JSON.stringify(entry)).join("\n");
-  await appendFile(paths.globalPath, `${payload}\n`, "utf8");
-  return entries.length;
-}
-
-export async function readRecentGlobalMemory(paths: MemoryPaths, limit = 8): Promise<GlobalMemoryEntry[]> {
-  if (!(await fileExists(paths.globalPath))) {
-    return [];
-  }
-  const raw = await readText(paths.globalPath);
-  const parsed = parseJsonlLines<GlobalMemoryEntry>(raw);
-  return parsed.slice(Math.max(0, parsed.length - limit));
-}
-
 export async function appendTemporaryContext(args: {
   paths: MemoryPaths;
   entry: TemporaryContextEntry;
   maxEntries: number;
 }): Promise<number> {
-  const items = await readJsonArray<TemporaryContextEntry>(args.paths.temporaryContextPath);
-  const next = [...items, args.entry];
-  const trimmed = next.length > args.maxEntries ? next.slice(next.length - args.maxEntries) : next;
-  await writeJsonArray(args.paths.temporaryContextPath, trimmed);
-  return trimmed.length;
+  return await withFileLock(args.paths.temporaryContextPath, async () => {
+    const items = await readJsonArray<TemporaryContextEntry>(args.paths.temporaryContextPath);
+    const next = [...items, args.entry];
+    const trimmed = next.length > args.maxEntries ? next.slice(next.length - args.maxEntries) : next;
+    await writeJsonArray(args.paths.temporaryContextPath, trimmed);
+    return trimmed.length;
+  });
 }
 
 export async function readTemporaryContext(paths: MemoryPaths, limit = 12): Promise<TemporaryContextEntry[]> {
@@ -597,9 +686,11 @@ export async function countTemporaryContext(paths: MemoryPaths): Promise<number>
 }
 
 export async function retainTemporaryContext(paths: MemoryPaths, retainCount: number): Promise<void> {
-  const items = await readJsonArray<TemporaryContextEntry>(paths.temporaryContextPath);
-  const trimmed = items.slice(Math.max(0, items.length - retainCount));
-  await writeJsonArray(paths.temporaryContextPath, trimmed);
+  await withFileLock(paths.temporaryContextPath, async () => {
+    const items = await readJsonArray<TemporaryContextEntry>(paths.temporaryContextPath);
+    const trimmed = items.slice(Math.max(0, items.length - retainCount));
+    await writeJsonArray(paths.temporaryContextPath, trimmed);
+  });
 }
 
 export async function appendPersonalVectorMemories(args: {
@@ -707,8 +798,8 @@ export async function recallLayeredMemory(args: {
   temporaryLimit?: number;
 }): Promise<LayeredMemoryRecall> {
   const temporaryLimit = args.temporaryLimit ?? 8;
-  const [temporary, personalHits, groupHits] = await Promise.all([
-    readTemporaryContext(args.paths, temporaryLimit),
+  const [allTemporary, personalHits, groupHits] = await Promise.all([
+    readJsonArray<TemporaryContextEntry>(args.paths.temporaryContextPath),
     searchPersonalVectorMemory({
       paths: args.paths,
       query: args.query,
@@ -722,20 +813,34 @@ export async function recallLayeredMemory(args: {
       options: args.options
     })
   ]);
+
+  const q = args.query.trim().toLowerCase();
+  const scoredTemporary = allTemporary.map((entry) => {
+    const haystack = `${entry.task}\n${entry.outputSummary}`;
+    return {
+      entry,
+      score: lexicalMatchBoost(q, haystack),
+      ts: parseTimeMs(entry.ts)
+    };
+  });
+  const selectedByMatch = scoredTemporary
+    .filter((item) => item.score > 0)
+    .sort((a, b) => (b.score - a.score) || (b.ts - a.ts))
+    .slice(0, temporaryLimit)
+    .map((item) => item.entry);
+  const selectedIds = new Set(selectedByMatch.map((entry) => `${entry.runId}|${entry.ts}`));
+  const fallbackRecent = allTemporary
+    .slice()
+    .sort((a, b) => parseTimeMs(b.ts) - parseTimeMs(a.ts))
+    .filter((entry) => !selectedIds.has(`${entry.runId}|${entry.ts}`))
+    .slice(0, Math.max(0, temporaryLimit - selectedByMatch.length));
+  const temporary = [...selectedByMatch, ...fallbackRecent].sort((a, b) => parseTimeMs(a.ts) - parseTimeMs(b.ts));
+
   return {
     temporary,
     personalHits,
     groupHits
   };
-}
-
-export function summarizeGlobalMemory(entries: GlobalMemoryEntry[]): string {
-  if (entries.length === 0) {
-    return "No global memory yet.";
-  }
-  return entries
-    .map((entry) => `[${entry.ts}] from=${entry.sourceAgentId} memory="${trimSummary(entry.memory, 220)}"`)
-    .join("\n");
 }
 
 export function summarizeLayeredLocalMemory(recall: LayeredMemoryRecall): string {

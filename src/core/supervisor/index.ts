@@ -3,17 +3,15 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { compileAgentSpecPrompt } from "../prompt-compiler/index.js";
-import { shouldRunCompaction } from "../memory/compaction.js";
-import { classifyTemporaryContextForVector, distillMemoryWithCurrentAgent } from "../memory/distill.js";
+import { classifyTemporaryContextForVector } from "../memory/distill.js";
 import { findRepairSkillIds, isInstallIntentTask } from "../repair/index.js";
 import { selectSkillsForTask } from "../skill-selector/index.js";
 import { resolveCapability } from "../skill-manager/index.js";
 import { parseCapabilityRequest } from "../skill-manager/protocol.js";
 import { decidePermissionByAdmin } from "../security/admin-approver.js";
-import { toRuntimePermission, minProfile, profileRank } from "../security/permissions.js";
+import { toRuntimePermission, minProfile } from "../security/permissions.js";
 import { parsePermissionRequest } from "../security/protocol.js";
 import {
-  appendGlobalMemory,
   appendGroupVectorMemories,
   appendPersonalVectorMemories,
   appendTemporaryContext,
@@ -33,11 +31,10 @@ import { loadAgentPack, type AgentPack } from "../../registry/agent-pack.js";
 import { loadAgentSpec } from "../../registry/agent-spec.js";
 import { loadAppConfig, loadPolicies, loadSkills } from "../../registry/index.js";
 import { loadSkillIndex } from "../../registry/skill-index.js";
-import { ensureRuntimeLibrary } from "../../runtime/library/index.js";
+import { ensureRuntimeLibrary, loadRuntimeSkills } from "../../runtime/library/index.js";
 import { appendEvent, createRun, finalizeRun, writeSnapshot } from "../../storage/index.js";
 import type { AgentSpec, EngineRunResult, PermissionProfile, Policy, RunEvent, RunMode, RunRequest } from "../../types/contracts.js";
 import { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
-import { renderPromptSection } from "../../registry/prompt-templates.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -100,10 +97,9 @@ async function askUserEscalation(args: {
 }): Promise<boolean> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const answer = await rl.question(renderPromptSection("supervisor/messages", "permission-escalation-question", {
-      requested_profile: args.requestedProfile,
-      reason: args.reason
-    }));
+    const answer = await rl.question(
+      `Permission escalation required: profile=${args.requestedProfile}. Reason: ${args.reason}. Approve? [y/N] `
+    );
     const normalized = answer.trim().toLowerCase();
     return normalized === "y" || normalized === "yes";
   } finally {
@@ -117,7 +113,7 @@ function repairPackFromAgentSpec(spec: AgentSpec): AgentPack {
     persona: spec.persona,
     workflow: spec.workflow,
     style: spec.style,
-    ioContract: renderPromptSection("supervisor/messages", "repair-pack-io-contract", {}),
+    ioContract: "Return strict capability protocol JSON only.",
     skills: spec.capabilityPolicy,
     skillWhitelist: spec.skillWhitelist,
     path: spec.path
@@ -132,20 +128,26 @@ export async function runTask(
   request: RunRequest,
   hooks?: RunTaskHooks
 ): Promise<{ runId: string; result: EngineRunResult }> {
-  const appConfig = await loadAppConfig();
-  const [initialConfigSkills, policies, skillIndexDoc] = await Promise.all([
-    loadSkills(),
-    loadPolicies(),
-    loadSkillIndex()
+  const controlPlaneRoot = path.resolve(
+    request.controlPlaneRoot || process.env.MYDARL_CONTROL_PLANE_ROOT || inferControlPlaneRoot()
+  );
+  const configRoot = path.resolve(controlPlaneRoot, "config");
+  const configSkillsRoot = path.resolve(configRoot, "skills");
+
+  const appConfig = await loadAppConfig(configRoot);
+
+  const [configSkills, policies, skillIndexDoc] = await Promise.all([
+    loadSkills(configRoot),
+    loadPolicies(configRoot),
+    loadSkillIndex(configRoot)
   ]);
-  let configSkills = initialConfigSkills;
   const recommendedSources = skillIndexDoc.data.recommended_sources || [];
 
   const resolvedAgentId = request.agentId || appConfig.agent.default_id || appConfig.default_agent || "default";
 
   let executionSpec: AgentSpec;
   try {
-    executionSpec = await loadAgentSpec(resolvedAgentId, appConfig.agent.config_root);
+    executionSpec = await loadAgentSpec(resolvedAgentId, path.resolve(controlPlaneRoot, appConfig.agent.config_root));
   } catch {
     throw new Error(
       `Agent spec not found for '${resolvedAgentId}'. Expected file: config/agents/${resolvedAgentId}/agent.md`
@@ -170,13 +172,6 @@ export async function runTask(
   let currentPolicy = policyFromProfile(currentProfile);
 
   const taskWorkspace = path.resolve(request.taskWorkspace || process.cwd());
-  const controlPlaneRoot = path.resolve(
-    request.controlPlaneRoot || process.env.MYDARL_CONTROL_PLANE_ROOT || inferControlPlaneRoot()
-  );
-  const effectiveCodexHome = appConfig.engine.codex_home
-    ? path.resolve(appConfig.engine.codex_home)
-    : (process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : undefined);
-  const configSkillsRoot = path.resolve(controlPlaneRoot, "config", "skills");
   const workspaceInsideControlPlane = isPathInsideRoot(taskWorkspace, controlPlaneRoot);
   const allowControlPlaneSkillWrites = workspaceInsideControlPlane;
 
@@ -205,7 +200,8 @@ export async function runTask(
   const layeredMemory = await recallLayeredMemory({
     paths: memoryPaths,
     query: request.task,
-    options: memoryOptions
+    options: memoryOptions,
+    temporaryLimit: memoryOptions.temporaryMaxEntries
   });
   const localMemorySummary = summarizeLayeredLocalMemory(layeredMemory);
   const globalMemorySummary = summarizeLayeredGroupMemory(layeredMemory);
@@ -232,8 +228,7 @@ export async function runTask(
       allowControlPlaneSkillWrites,
       runMode,
       adminCap,
-      initialWorkerProfile: currentProfile,
-      codexHome: effectiveCodexHome
+      initialWorkerProfile: currentProfile
     })
   ]);
 
@@ -247,6 +242,19 @@ export async function runTask(
 
   const runtimePaths = await ensureRuntimeLibrary();
   const runtimeRoot = path.resolve(runtimePaths.root);
+  let runtimeSkills = await loadRuntimeSkills(runtimePaths);
+  const mergedSkillLibrary = (): typeof runtimeSkills => {
+    const byId = new Map<string, (typeof runtimeSkills)[number]>();
+    for (const skill of runtimeSkills) {
+      byId.set(skill.id, skill);
+    }
+    for (const skill of configSkills.values()) {
+      if (!byId.has(skill.id)) {
+        byId.set(skill.id, skill);
+      }
+    }
+    return [...byId.values()];
+  };
   const mainAdditionalDirectories = [configSkillsRoot, runtimeRoot].filter((dir, idx, all) => all.indexOf(dir) === idx && existsSync(dir));
   let mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
     workingDirectory: taskWorkspace,
@@ -313,12 +321,11 @@ export async function runTask(
   let failureKind: EngineRunResult["failureKind"] | undefined;
   let error: string | undefined;
 
-  // Permission/capability handshakes may consume multiple turns before actual execution.
-  const maxMainCycles = Math.max(4, appConfig.workflow.max_capability_attempts + 2);
+  const maxMainCycles = Math.max(2, appConfig.workflow.max_capability_attempts + 1);
   let forceRepairSelection = false;
 
   for (let cycle = 1; cycle <= maxMainCycles; cycle += 1) {
-    const allSkills = [...configSkills.values()];
+    const allSkills = mergedSkillLibrary();
     const installIntent = isInstallIntentTask(nextMainTask);
     const candidateSkillsBase = executionSpec.skillWhitelist.length > 0
       ? allSkills.filter((skill) => executionSpec.skillWhitelist.includes(skill.id))
@@ -363,11 +370,10 @@ export async function runTask(
       skillLibrary: allSkills,
       selectedSkillIds: selectedSkills.selectedSkillIds,
       runtimePathsHint: [
-        `config_skills_root: ${configSkillsRoot}`,
+        `runtime_root: ${runtimeRoot}`,
         `mcp_runtime_root: ${runtimePaths.mcpDir}`,
-        effectiveCodexHome ? `codex_home: ${effectiveCodexHome}` : undefined,
         "For MCP/tool virtualenvs and runtime artifacts, write under mcp_runtime_root instead of project-root .venv-* paths."
-      ].filter((line): line is string => Boolean(line)).join("\n"),
+      ].join("\n"),
       localMemorySummary,
       globalMemorySummary
     });
@@ -413,26 +419,6 @@ export async function runTask(
         ts: nowIso()
       });
 
-      if (profileRank(permissionRequest.requested_profile) <= profileRank(currentProfile)) {
-        await emit({
-          type: "permission.admin.decided",
-          runId: ctx.runId,
-          decision: "grant",
-          requestedProfile: permissionRequest.requested_profile,
-          grantedProfile: currentProfile,
-          reason: `profile ${currentProfile} already active`,
-          ts: nowIso()
-        });
-        nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
-          headline: "Permission is already granted at this profile. Execute the original task now and do not request the same profile again.",
-          original_task: request.task,
-          granted_profile: currentProfile,
-          reason_line: ""
-        });
-        finalOutput = "";
-        continue;
-      }
-
       const adminDecision = runMode === "managed"
         ? await decidePermissionByAdmin({
             sdkClient: adminSdkClient,
@@ -459,15 +445,13 @@ export async function runTask(
       });
 
       if (adminDecision.decision === "grant") {
-        if (adminDecision.profile !== currentProfile) {
-          rebuildMainWorker(adminDecision.profile);
-        }
-        nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
-          headline: "Permission granted. Continue the original task immediately.",
-          original_task: request.task,
-          granted_profile: adminDecision.profile,
-          reason_line: `Reason: ${adminDecision.reason}`
-        });
+        rebuildMainWorker(adminDecision.profile);
+        nextMainTask = [
+          "Permission granted. Continue the original task immediately.",
+          `Original task: ${request.task}`,
+          `Granted profile: ${adminDecision.profile}`,
+          `Reason: ${adminDecision.reason}`
+        ].join("\n");
         finalOutput = "";
         continue;
       }
@@ -504,12 +488,11 @@ export async function runTask(
       }
 
       rebuildMainWorker(adminDecision.profile);
-      nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
-        headline: "Permission escalation approved by user. Continue the original task immediately.",
-        original_task: request.task,
-        granted_profile: adminDecision.profile,
-        reason_line: ""
-      });
+      nextMainTask = [
+        "Permission escalation approved by user. Continue the original task immediately.",
+        `Original task: ${request.task}`,
+        `Granted profile: ${adminDecision.profile}`
+      ].join("\n");
       finalOutput = "";
       continue;
     }
@@ -555,7 +538,7 @@ export async function runTask(
       });
 
       if (capabilityResult.status === "ready") {
-        configSkills = await loadSkills();
+        runtimeSkills = await loadRuntimeSkills(runtimePaths);
         await setWorkflowPhase(ctx, "running-main");
         await emit({
           type: "workflow.phase.changed",
@@ -564,17 +547,18 @@ export async function runTask(
           ts: nowIso()
         });
 
-        nextMainTask = renderPromptSection("supervisor/messages", "next-main-capability-ready", {
-          original_task: request.task,
-          capability_ready_json: JSON.stringify({
+        nextMainTask = [
+          "Continue the original task using the new capability immediately.",
+          `Original task: ${request.task}`,
+          `Resolved capability: ${JSON.stringify({
             type: "CAPABILITY_READY",
             capability_id: capabilityResult.capability_id,
             entrypoint: capabilityResult.entrypoint,
             skill_path: capabilityResult.skill_path,
             tests_passed: capabilityResult.tests_passed,
             evidence: capabilityResult.evidence
-          }, null, 2)
-        });
+          }, null, 2)}`
+        ].join("\n\n");
         finalOutput = "";
         continue;
       }
@@ -625,164 +609,93 @@ export async function runTask(
     failureKind
   };
 
-  const shouldCompact = shouldRunCompaction({
-    appConfig,
-    result
-  });
-
-  const baseMemoryEntry = {
-    ts: nowIso(),
-    runId: ctx.runId,
-    agentId: resolvedAgentId,
-    task: request.task,
-    status: result.status,
-    outputSummary: summarizeResultForMemory(result)
-  } as const;
-  await appendTemporaryContext({
-    paths: memoryPaths,
-    entry: baseMemoryEntry,
-    maxEntries: memoryOptions.temporaryMaxEntries
-  });
-
-  if (shouldCompact) {
-    await emit({
-      type: "memory.compaction.started",
+  try {
+    const baseMemoryEntry = {
+      ts: nowIso(),
       runId: ctx.runId,
-      agentId: resolvedAgentId,
-      trigger: appConfig.memory.compaction.trigger,
-      ts: nowIso()
-    });
-
-    const distilled = await distillMemoryWithCurrentAgent({
-      sdkClient: memorySdkClient,
-      thread: memoryThread,
       agentId: resolvedAgentId,
       task: request.task,
-      result,
-      onEvent: emitStream
-    });
-
-    const localSummary = distilled.localSummary || summarizeResultForMemory(result);
-
-    const appended = await appendGlobalMemory(
-      memoryPaths,
-      distilled.globalMemories.slice(0, 3).map((memory) => ({
-        ts: baseMemoryEntry.ts,
-        sourceAgentId: resolvedAgentId,
-        runId: ctx.runId,
-        memory
-      }))
-    );
-
-    await appendPersonalVectorMemories({
+      status: result.status,
+      outputSummary: summarizeResultForMemory(result)
+    } as const;
+    await appendTemporaryContext({
       paths: memoryPaths,
-      entries: [{
-        ts: baseMemoryEntry.ts,
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        text: localSummary
-      }],
-      options: memoryOptions
-    });
-    await appendGroupVectorMemories({
-      paths: memoryPaths,
-      entries: distilled.globalMemories.slice(0, 3).map((memory) => ({
-        ts: baseMemoryEntry.ts,
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        text: memory
-      })),
-      options: memoryOptions
-    });
-    await compactVectorMemories({
-      paths: memoryPaths,
-      options: memoryOptions
+      entry: baseMemoryEntry,
+      maxEntries: memoryOptions.temporaryMaxEntries
     });
 
-    if (appended > 0) {
+    const temporaryCount = await countTemporaryContext(memoryPaths);
+    if (temporaryCount >= memoryOptions.temporaryPromoteThreshold) {
       await emit({
-        type: "memory.distill.global.appended",
+        type: "memory.compaction.started",
         runId: ctx.runId,
         agentId: resolvedAgentId,
-        count: appended,
+        trigger: "temporary_threshold",
+        ts: nowIso()
+      });
+
+      const temporaryBatch = await readTemporaryContext(memoryPaths, memoryOptions.temporaryPromoteThreshold);
+      const promoted = await classifyTemporaryContextForVector({
+        sdkClient: memorySdkClient,
+        thread: memoryThread,
+        agentId: resolvedAgentId,
+        entries: temporaryBatch.map((entry) => ({
+          ts: entry.ts,
+          task: entry.task,
+          status: entry.status,
+          outputSummary: entry.outputSummary
+        })),
+        onEvent: emitStream
+      });
+
+      await appendPersonalVectorMemories({
+        paths: memoryPaths,
+        entries: promoted.personalMemories.map((text) => ({
+          ts: nowIso(),
+          runId: ctx.runId,
+          agentId: resolvedAgentId,
+          text
+        })),
+        options: memoryOptions
+      });
+      const promotedGroupCount = await appendGroupVectorMemories({
+        paths: memoryPaths,
+        entries: promoted.groupMemories.map((text) => ({
+          ts: nowIso(),
+          runId: ctx.runId,
+          agentId: resolvedAgentId,
+          text
+        })),
+        options: memoryOptions
+      });
+      await retainTemporaryContext(memoryPaths, memoryOptions.temporaryRetainAfterPromote);
+      await compactVectorMemories({
+        paths: memoryPaths,
+        options: memoryOptions
+      });
+
+      if (promotedGroupCount > 0) {
+        await emit({
+          type: "memory.vector.group.appended",
+          runId: ctx.runId,
+          agentId: resolvedAgentId,
+          count: promotedGroupCount,
+          ts: nowIso()
+        });
+      }
+
+      await emit({
+        type: "memory.compaction.finished",
+        runId: ctx.runId,
+        agentId: resolvedAgentId,
+        compacted: true,
         ts: nowIso()
       });
     }
-
+  } catch (memoryError) {
     await emit({
-      type: "memory.compaction.finished",
-      runId: ctx.runId,
-      agentId: resolvedAgentId,
-      compacted: true,
-      ts: nowIso()
-    });
-  }
-
-  const temporaryCount = await countTemporaryContext(memoryPaths);
-  if (temporaryCount >= memoryOptions.temporaryPromoteThreshold) {
-    await emit({
-      type: "memory.compaction.started",
-      runId: ctx.runId,
-      agentId: resolvedAgentId,
-      trigger: "temporary_threshold",
-      ts: nowIso()
-    });
-
-    const temporaryBatch = await readTemporaryContext(memoryPaths, memoryOptions.temporaryPromoteThreshold);
-    const promoted = await classifyTemporaryContextForVector({
-      sdkClient: memorySdkClient,
-      thread: memoryThread,
-      agentId: resolvedAgentId,
-      entries: temporaryBatch.map((entry) => ({
-        ts: entry.ts,
-        task: entry.task,
-        status: entry.status,
-        outputSummary: entry.outputSummary
-      })),
-      onEvent: emitStream
-    });
-
-    await appendPersonalVectorMemories({
-      paths: memoryPaths,
-      entries: promoted.personalMemories.map((text) => ({
-        ts: nowIso(),
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        text
-      })),
-      options: memoryOptions
-    });
-    const promotedGroupCount = await appendGroupVectorMemories({
-      paths: memoryPaths,
-      entries: promoted.groupMemories.map((text) => ({
-        ts: nowIso(),
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        text
-      })),
-      options: memoryOptions
-    });
-    await retainTemporaryContext(memoryPaths, memoryOptions.temporaryRetainAfterPromote);
-    await compactVectorMemories({
-      paths: memoryPaths,
-      options: memoryOptions
-    });
-
-    if (promotedGroupCount > 0) {
-      await emit({
-        type: "memory.distill.global.appended",
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        count: promotedGroupCount,
-        ts: nowIso()
-      });
-    }
-
-    await emit({
-      type: "memory.compaction.finished",
-      runId: ctx.runId,
-      agentId: resolvedAgentId,
-      compacted: true,
+      type: "run.error",
+      message: `memory persistence failed: ${memoryError instanceof Error ? memoryError.message : String(memoryError)}`,
       ts: nowIso()
     });
   }

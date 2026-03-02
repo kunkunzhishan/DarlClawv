@@ -213,7 +213,10 @@ export async function loadAppConfig(configRoot = path.resolve("config")): Promis
     },
     memory: {
       local_store_root: parsed.memory?.local_store_root || ".darlclawv-runtime/memory/agents",
-      global_store_path: parsed.memory?.global_store_path || ".darlclawv-runtime/memory/global/distilled.jsonl",
+      global_vector_store_path:
+        envString("MYDARL_MEMORY_GLOBAL_VECTOR_STORE_PATH") ??
+        parsed.memory?.global_vector_store_path ??
+        ".darlclawv-runtime/memory/global/group-vector.json",
       vector: {
         dimension: envNumber("MYDARL_MEMORY_VECTOR_DIMENSION") ?? parsed.memory?.vector?.dimension ?? 96,
         personal_recall_top_k:
@@ -267,10 +270,6 @@ export async function loadAppConfig(configRoot = path.resolve("config")): Promis
         retain_after_promote:
           envNumber("MYDARL_MEMORY_TEMP_RETAIN_AFTER_PROMOTE") ?? parsed.memory?.temporary?.retain_after_promote ?? 12,
         max_entries: envNumber("MYDARL_MEMORY_TEMP_MAX_ENTRIES") ?? parsed.memory?.temporary?.max_entries ?? 200
-      },
-      compaction: {
-        trigger: parsed.memory?.compaction?.trigger || "on_task_finished",
-        token_threshold: parsed.memory?.compaction?.token_threshold ?? 50000
       }
     },
     web: {
