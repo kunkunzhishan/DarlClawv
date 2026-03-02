@@ -33,11 +33,7 @@ function baseConfig(root: string): AppConfig {
     },
     memory: {
       local_store_root: path.join(root, "memory", "agents"),
-      global_store_path: path.join(root, "memory", "global", "distilled.jsonl"),
-      compaction: {
-        trigger: "on_task_finished",
-        token_threshold: 1000
-      },
+      global_vector_store_path: path.join(root, "memory", "global", "group-vector.json"),
       vector: {
         dimension: 64,
         personal_recall_top_k: 5,
@@ -220,4 +216,122 @@ test("vector append splits long text and supports embedding fallback", async () 
     options
   });
   assert.equal(stored.length >= 2, true);
+});
+
+test("appendTemporaryContext is concurrency-safe", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-memory-vector-"));
+  const config = baseConfig(root);
+  const paths = resolveMemoryPaths(config, "default");
+  const options = resolveMemoryRuntimeOptions(config);
+  const total = 24;
+
+  await Promise.all(Array.from({ length: total }, (_, i) =>
+    appendTemporaryContext({
+      paths,
+      maxEntries: options.temporaryMaxEntries,
+      entry: {
+        ts: `2026-03-03T00:00:${String(i).padStart(2, "0")}Z`,
+        runId: `run-${i}`,
+        agentId: "default",
+        task: `task-${i}`,
+        status: "ok",
+        outputSummary: `summary-${i}`
+      }
+    })
+  ));
+
+  assert.equal(await countTemporaryContext(paths), Math.min(total, options.temporaryMaxEntries));
+});
+
+test("appendPersonalVectorMemories is concurrency-safe", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-memory-vector-"));
+  const config = baseConfig(root);
+  const paths = resolveMemoryPaths(config, "default");
+  const options = resolveMemoryRuntimeOptions(config);
+  const total = 20;
+
+  await Promise.all(Array.from({ length: total }, (_, i) =>
+    appendPersonalVectorMemories({
+      paths,
+      options,
+      entries: [{
+        ts: `2026-03-03T00:01:${String(i).padStart(2, "0")}Z`,
+        runId: `v-${i}`,
+        agentId: "default",
+        text: `并发写入记忆 ${i}`
+      }]
+    })
+  ));
+
+  const stored = await readRecentPersonalVectorMemory({
+    paths,
+    limit: 100,
+    options
+  });
+  assert.equal(stored.length, total);
+});
+
+test("layered recall prioritizes temporary context that matches query", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-memory-vector-"));
+  const config = baseConfig(root);
+  const paths = resolveMemoryPaths(config, "default");
+  const options = resolveMemoryRuntimeOptions(config);
+
+  for (let i = 0; i < 12; i += 1) {
+    await appendTemporaryContext({
+      paths,
+      maxEntries: options.temporaryMaxEntries,
+      entry: {
+        ts: `2026-03-01T00:00:${String(i).padStart(2, "0")}Z`,
+        runId: `r-${i}`,
+        agentId: "default",
+        task: i === 1 ? "用户问了阿宝是谁" : `普通问题-${i}`,
+        status: "ok",
+        outputSummary: i === 1 ? "阿宝是角色名" : `普通回答-${i}`
+      }
+    });
+  }
+
+  const recall = await recallLayeredMemory({
+    paths,
+    query: "阿宝",
+    options,
+    temporaryLimit: 4
+  });
+
+  assert.equal(recall.temporary.some((entry) => entry.task.includes("阿宝") || entry.outputSummary.includes("阿宝")), true);
+});
+
+test("layered recall can match long chinese query to older temporary entry", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-memory-vector-"));
+  const config = baseConfig(root);
+  const paths = resolveMemoryPaths(config, "default");
+  const options = resolveMemoryRuntimeOptions(config);
+
+  for (let i = 0; i < 20; i += 1) {
+    await appendTemporaryContext({
+      paths,
+      maxEntries: options.temporaryMaxEntries,
+      entry: {
+        ts: `2026-03-01T00:10:${String(i).padStart(2, "0")}Z`,
+        runId: `older-${i}`,
+        agentId: "default",
+        task: i === 1 ? "之前用户问过阿宝是谁" : `普通问题-${i}`,
+        status: "ok",
+        outputSummary: i === 1 ? "阿宝是功夫熊猫角色" : `普通回答-${i}`
+      }
+    });
+  }
+
+  const recall = await recallLayeredMemory({
+    paths,
+    query: "临时记忆里我刚才问的阿宝这个事情是什么",
+    options,
+    temporaryLimit: 6
+  });
+
+  assert.equal(
+    recall.temporary.some((entry) => entry.task.includes("阿宝") || entry.outputSummary.includes("阿宝")),
+    true
+  );
 });

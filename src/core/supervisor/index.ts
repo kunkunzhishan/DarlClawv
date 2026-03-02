@@ -3,8 +3,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { compileAgentSpecPrompt } from "../prompt-compiler/index.js";
-import { shouldRunCompaction } from "../memory/compaction.js";
-import { classifyTemporaryContextForVector, distillMemoryWithCurrentAgent } from "../memory/distill.js";
+import { classifyTemporaryContextForVector } from "../memory/distill.js";
 import { findRepairSkillIds, isInstallIntentTask } from "../repair/index.js";
 import { selectSkillsForTask } from "../skill-selector/index.js";
 import { resolveCapability } from "../skill-manager/index.js";
@@ -13,9 +12,7 @@ import { decidePermissionByAdmin } from "../security/admin-approver.js";
 import { toRuntimePermission, minProfile } from "../security/permissions.js";
 import { parsePermissionRequest } from "../security/protocol.js";
 import {
-  appendGlobalMemory,
   appendGroupVectorMemories,
-  appendLocalMemory,
   appendPersonalVectorMemories,
   appendTemporaryContext,
   compactVectorMemories,
@@ -131,11 +128,18 @@ export async function runTask(
   request: RunRequest,
   hooks?: RunTaskHooks
 ): Promise<{ runId: string; result: EngineRunResult }> {
-  const appConfig = await loadAppConfig();
+  const controlPlaneRoot = path.resolve(
+    request.controlPlaneRoot || process.env.MYDARL_CONTROL_PLANE_ROOT || inferControlPlaneRoot()
+  );
+  const configRoot = path.resolve(controlPlaneRoot, "config");
+  const configSkillsRoot = path.resolve(configRoot, "skills");
+
+  const appConfig = await loadAppConfig(configRoot);
+
   const [configSkills, policies, skillIndexDoc] = await Promise.all([
-    loadSkills(),
-    loadPolicies(),
-    loadSkillIndex()
+    loadSkills(configRoot),
+    loadPolicies(configRoot),
+    loadSkillIndex(configRoot)
   ]);
   const recommendedSources = skillIndexDoc.data.recommended_sources || [];
 
@@ -143,7 +147,7 @@ export async function runTask(
 
   let executionSpec: AgentSpec;
   try {
-    executionSpec = await loadAgentSpec(resolvedAgentId, appConfig.agent.config_root);
+    executionSpec = await loadAgentSpec(resolvedAgentId, path.resolve(controlPlaneRoot, appConfig.agent.config_root));
   } catch {
     throw new Error(
       `Agent spec not found for '${resolvedAgentId}'. Expected file: config/agents/${resolvedAgentId}/agent.md`
@@ -168,10 +172,6 @@ export async function runTask(
   let currentPolicy = policyFromProfile(currentProfile);
 
   const taskWorkspace = path.resolve(request.taskWorkspace || process.cwd());
-  const controlPlaneRoot = path.resolve(
-    request.controlPlaneRoot || process.env.MYDARL_CONTROL_PLANE_ROOT || inferControlPlaneRoot()
-  );
-  const configSkillsRoot = path.resolve(controlPlaneRoot, "config", "skills");
   const workspaceInsideControlPlane = isPathInsideRoot(taskWorkspace, controlPlaneRoot);
   const allowControlPlaneSkillWrites = workspaceInsideControlPlane;
 
@@ -200,7 +200,8 @@ export async function runTask(
   const layeredMemory = await recallLayeredMemory({
     paths: memoryPaths,
     query: request.task,
-    options: memoryOptions
+    options: memoryOptions,
+    temporaryLimit: memoryOptions.temporaryMaxEntries
   });
   const localMemorySummary = summarizeLayeredLocalMemory(layeredMemory);
   const globalMemorySummary = summarizeLayeredGroupMemory(layeredMemory);
@@ -608,174 +609,93 @@ export async function runTask(
     failureKind
   };
 
-  const shouldCompact = shouldRunCompaction({
-    appConfig,
-    result
-  });
-
-  const baseMemoryEntry = {
-    ts: nowIso(),
-    runId: ctx.runId,
-    agentId: resolvedAgentId,
-    task: request.task,
-    status: result.status,
-    outputSummary: summarizeResultForMemory(result)
-  } as const;
-  await appendTemporaryContext({
-    paths: memoryPaths,
-    entry: baseMemoryEntry,
-    maxEntries: memoryOptions.temporaryMaxEntries
-  });
-
-  if (shouldCompact) {
-    await emit({
-      type: "memory.compaction.started",
-      runId: ctx.runId,
-      agentId: resolvedAgentId,
-      trigger: appConfig.memory.compaction.trigger,
-      ts: nowIso()
-    });
-
-    const distilled = await distillMemoryWithCurrentAgent({
-      sdkClient: memorySdkClient,
-      thread: memoryThread,
-      agentId: resolvedAgentId,
-      task: request.task,
-      result,
-      onEvent: emitStream
-    });
-
-    const localSummary = distilled.localSummary || summarizeResultForMemory(result);
-    await appendLocalMemory(memoryPaths, {
-      ts: baseMemoryEntry.ts,
+  try {
+    const baseMemoryEntry = {
+      ts: nowIso(),
       runId: ctx.runId,
       agentId: resolvedAgentId,
       task: request.task,
       status: result.status,
-      outputSummary: localSummary
+      outputSummary: summarizeResultForMemory(result)
+    } as const;
+    await appendTemporaryContext({
+      paths: memoryPaths,
+      entry: baseMemoryEntry,
+      maxEntries: memoryOptions.temporaryMaxEntries
     });
 
-    const appended = await appendGlobalMemory(
-      memoryPaths,
-      distilled.globalMemories.slice(0, 3).map((memory) => ({
-        ts: baseMemoryEntry.ts,
-        sourceAgentId: resolvedAgentId,
-        runId: ctx.runId,
-        memory
-      }))
-    );
-
-    await appendPersonalVectorMemories({
-      paths: memoryPaths,
-      entries: [{
-        ts: baseMemoryEntry.ts,
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        text: localSummary
-      }],
-      options: memoryOptions
-    });
-    await appendGroupVectorMemories({
-      paths: memoryPaths,
-      entries: distilled.globalMemories.slice(0, 3).map((memory) => ({
-        ts: baseMemoryEntry.ts,
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        text: memory
-      })),
-      options: memoryOptions
-    });
-    await compactVectorMemories({
-      paths: memoryPaths,
-      options: memoryOptions
-    });
-
-    if (appended > 0) {
+    const temporaryCount = await countTemporaryContext(memoryPaths);
+    if (temporaryCount >= memoryOptions.temporaryPromoteThreshold) {
       await emit({
-        type: "memory.distill.global.appended",
+        type: "memory.compaction.started",
         runId: ctx.runId,
         agentId: resolvedAgentId,
-        count: appended,
+        trigger: "temporary_threshold",
+        ts: nowIso()
+      });
+
+      const temporaryBatch = await readTemporaryContext(memoryPaths, memoryOptions.temporaryPromoteThreshold);
+      const promoted = await classifyTemporaryContextForVector({
+        sdkClient: memorySdkClient,
+        thread: memoryThread,
+        agentId: resolvedAgentId,
+        entries: temporaryBatch.map((entry) => ({
+          ts: entry.ts,
+          task: entry.task,
+          status: entry.status,
+          outputSummary: entry.outputSummary
+        })),
+        onEvent: emitStream
+      });
+
+      await appendPersonalVectorMemories({
+        paths: memoryPaths,
+        entries: promoted.personalMemories.map((text) => ({
+          ts: nowIso(),
+          runId: ctx.runId,
+          agentId: resolvedAgentId,
+          text
+        })),
+        options: memoryOptions
+      });
+      const promotedGroupCount = await appendGroupVectorMemories({
+        paths: memoryPaths,
+        entries: promoted.groupMemories.map((text) => ({
+          ts: nowIso(),
+          runId: ctx.runId,
+          agentId: resolvedAgentId,
+          text
+        })),
+        options: memoryOptions
+      });
+      await retainTemporaryContext(memoryPaths, memoryOptions.temporaryRetainAfterPromote);
+      await compactVectorMemories({
+        paths: memoryPaths,
+        options: memoryOptions
+      });
+
+      if (promotedGroupCount > 0) {
+        await emit({
+          type: "memory.vector.group.appended",
+          runId: ctx.runId,
+          agentId: resolvedAgentId,
+          count: promotedGroupCount,
+          ts: nowIso()
+        });
+      }
+
+      await emit({
+        type: "memory.compaction.finished",
+        runId: ctx.runId,
+        agentId: resolvedAgentId,
+        compacted: true,
         ts: nowIso()
       });
     }
-
+  } catch (memoryError) {
     await emit({
-      type: "memory.compaction.finished",
-      runId: ctx.runId,
-      agentId: resolvedAgentId,
-      compacted: true,
-      ts: nowIso()
-    });
-  } else {
-    await appendLocalMemory(memoryPaths, baseMemoryEntry);
-  }
-
-  const temporaryCount = await countTemporaryContext(memoryPaths);
-  if (temporaryCount >= memoryOptions.temporaryPromoteThreshold) {
-    await emit({
-      type: "memory.compaction.started",
-      runId: ctx.runId,
-      agentId: resolvedAgentId,
-      trigger: "temporary_threshold",
-      ts: nowIso()
-    });
-
-    const temporaryBatch = await readTemporaryContext(memoryPaths, memoryOptions.temporaryPromoteThreshold);
-    const promoted = await classifyTemporaryContextForVector({
-      sdkClient: memorySdkClient,
-      thread: memoryThread,
-      agentId: resolvedAgentId,
-      entries: temporaryBatch.map((entry) => ({
-        ts: entry.ts,
-        task: entry.task,
-        status: entry.status,
-        outputSummary: entry.outputSummary
-      })),
-      onEvent: emitStream
-    });
-
-    await appendPersonalVectorMemories({
-      paths: memoryPaths,
-      entries: promoted.personalMemories.map((text) => ({
-        ts: nowIso(),
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        text
-      })),
-      options: memoryOptions
-    });
-    const promotedGroupCount = await appendGroupVectorMemories({
-      paths: memoryPaths,
-      entries: promoted.groupMemories.map((text) => ({
-        ts: nowIso(),
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        text
-      })),
-      options: memoryOptions
-    });
-    await retainTemporaryContext(memoryPaths, memoryOptions.temporaryRetainAfterPromote);
-    await compactVectorMemories({
-      paths: memoryPaths,
-      options: memoryOptions
-    });
-
-    if (promotedGroupCount > 0) {
-      await emit({
-        type: "memory.distill.global.appended",
-        runId: ctx.runId,
-        agentId: resolvedAgentId,
-        count: promotedGroupCount,
-        ts: nowIso()
-      });
-    }
-
-    await emit({
-      type: "memory.compaction.finished",
-      runId: ctx.runId,
-      agentId: resolvedAgentId,
-      compacted: true,
+      type: "run.error",
+      message: `memory persistence failed: ${memoryError instanceof Error ? memoryError.message : String(memoryError)}`,
       ts: nowIso()
     });
   }

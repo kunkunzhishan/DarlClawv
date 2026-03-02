@@ -102,7 +102,7 @@ export type AppConfig = {
   };
   memory: {
     local_store_root: string;
-    global_store_path: string;
+    global_vector_store_path: string;
     vector?: {
       dimension?: number;
       personal_recall_top_k?: number;
@@ -128,10 +128,6 @@ export type AppConfig = {
       promote_threshold?: number;
       retain_after_promote?: number;
       max_entries?: number;
-    };
-    compaction: {
-      trigger: "on_task_finished" | "token_threshold";
-      token_threshold: number;
     };
   };
   web: {
@@ -386,7 +382,7 @@ export type RunEvent =
   | { type: "memory.compaction.started"; runId: string; agentId: string; trigger: string; ts: string }
   | { type: "memory.compaction.finished"; runId: string; agentId: string; compacted: boolean; ts: string }
   | {
-      type: "memory.distill.global.appended";
+      type: "memory.vector.group.appended";
       runId: string;
       agentId: string;
       count: number;
