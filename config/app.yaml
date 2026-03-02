@@ -1,0 +1,45 @@
+default_policy: safe-default
+agent:
+  default_id: default
+  config_root: config/agents
+engine:
+  provider: codex-sdk
+  model: gpt-5-codex
+  timeout_ms: 120000
+memory:
+  local_store_root: .mydarl-runtime/memory/agents
+  global_store_path: .mydarl-runtime/memory/global/distilled.jsonl
+  vector:
+    dimension: 96
+    personal_recall_top_k: 6
+    group_recall_top_k: 6
+    compaction_similarity_threshold: 0.97
+    max_records: 5000
+    embedding:
+      provider: deterministic
+      base_url: https://open.bigmodel.cn/api/paas/v4
+      model: embedding-3
+      api_key_env: EMBEDDING_API_KEY
+      timeout_ms: 20000
+      fallback_to_deterministic: true
+    splitter:
+      enabled: true
+      max_chars: 400
+      overlap_chars: 60
+      min_chunk_chars: 20
+  temporary:
+    promote_threshold: 24
+    retain_after_promote: 12
+    max_entries: 200
+  compaction:
+    trigger: on_task_finished
+    token_threshold: 50000
+web:
+  autostart: true
+  host: 127.0.0.1
+  port: 4789
+workflow:
+  max_capability_attempts: 1
+  capability_timeout_ms: 600000
+  enable_skill_manager: false
+  allow_promote_to_config_skills: true

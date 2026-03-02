@@ -1,0 +1,9 @@
+id: safe-default
+fs:
+  mode: workspace-write
+shell:
+  allow: []
+  deny: []
+  confirm_on: []
+network:
+  enabled: true

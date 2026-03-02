@@ -1,0 +1,58 @@
+version: 1
+updated_at: "2026-02-28T00:00:00.000Z"
+recommended_sources:
+  - id: openai-skills-github
+    kind: skill
+    url: https://github.com/openai/skills
+    domain: github.com
+    trust_tier: certified
+    enabled: true
+  - id: modelcontextprotocol
+    kind: mcp
+    url: https://modelcontextprotocol.io
+    domain: modelcontextprotocol.io
+    trust_tier: certified
+    enabled: true
+  - id: anthropic-mcp-docs
+    kind: mcp
+    url: https://docs.anthropic.com/en/docs/claude-code/mcp
+    domain: docs.anthropic.com
+    trust_tier: popular
+    enabled: true
+skills:
+  mcp-recovery:
+    status: active
+    short: MCP/tool repair
+    aliases:
+      - mcp
+      - tool-recovery
+      - install-tool
+    tags:
+      - integration
+      - recovery
+      - unblock
+    usage_hint: Use only when blocked by missing MCP/tool capability.
+    trust_tier: certified
+    source_ref: openai-skills-github
+    popularity:
+      uses: 100
+      success_rate: 0.9
+    repair_role: repair
+  repo-basics:
+    status: active
+    short: Safe code edits
+    aliases:
+      - repo
+      - code-edit
+      - patch
+    tags:
+      - coding
+      - refactor
+      - bugfix
+    usage_hint: Default coding skill for minimal and auditable changes.
+    trust_tier: popular
+    source_ref: openai-skills-github
+    popularity:
+      uses: 80
+      success_rate: 0.88
+    repair_role: normal
