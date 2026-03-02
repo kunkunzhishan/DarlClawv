@@ -81,11 +81,11 @@ export function compilePrompt(args: {
   skillLibrary: Skill[];
 }): CompiledPrompt {
   const system = [
-    "You are running inside MyDarl as the execution runtime.",
+    "You are running inside DarlClawv as the execution runtime.",
     "Primary goal: complete the user's task end-to-end.",
     "If blocked by missing tools/MCP, you may install/configure required MCP servers, verify them, then continue the same task.",
     "Avoid irrelevant setup. Only perform recovery actions that unblock the current task.",
-    `Policy: fs=${args.policy.fs.mode}, network=${String(args.policy.network.enabled)}`,
+    `Policy: sandbox=${args.policy.sandbox.mode}, approval=${args.policy.sandbox.approval_policy}, network=${String(args.policy.network.enabled)}`,
     `Preferred agent profile: ${args.preferredAgent.id}`
   ].join("\n");
 
@@ -120,7 +120,7 @@ export function compileAgentPackPrompt(args: {
   const system = [
     args.pack.persona.trim(),
     args.pack.workflow.trim(),
-    `Policy: fs=${args.policy.fs.mode}, network=${String(args.policy.network.enabled)}`
+    `Policy: sandbox=${args.policy.sandbox.mode}, approval=${args.policy.sandbox.approval_policy}, network=${String(args.policy.network.enabled)}`
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -166,7 +166,7 @@ export function compileAgentSpecPrompt(args: {
   const system = [
     args.spec.persona.trim(),
     args.spec.workflow.trim(),
-    `Policy: fs=${args.policy.fs.mode}, network=${String(args.policy.network.enabled)}`
+    `Policy: sandbox=${args.policy.sandbox.mode}, approval=${args.policy.sandbox.approval_policy}, network=${String(args.policy.network.enabled)}`
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -174,6 +174,13 @@ export function compileAgentSpecPrompt(args: {
   const developer = [
     args.spec.style.trim(),
     args.spec.capabilityPolicy.trim(),
+    "If permission is insufficient, emit PERMISSION_REQUEST JSON only: {\"type\":\"PERMISSION_REQUEST\",\"requested_profile\":\"safe|workspace|full\",\"reason\":\"what operation you need and where\"}.",
+    "Default assumption: local filesystem read operations are allowed across absolute paths (including outside workspace).",
+    "For read-only operations (ls/cat/find/grep/head/tail/stat), do not request permission preemptively; try first.",
+    "Request permission only after an explicit sandbox/approval denial, or when you need write/network/system-level actions.",
+    "Always request the minimum profile needed: safe for read/inspect, workspace for workspace edits, full only for truly system-level or unrestricted operations.",
+    "Never request full for a pure read-only file inspection task.",
+    "If admin grants a lower profile than requested, retry the operation with the granted profile before asking again.",
     "Repair policy: for install/setup requests, prefer certified or popular repair-capable skills before others.",
     "If tools/MCP fail or capability is missing, emit CAPABILITY_REQUEST JSON and expect repair flow to resolve it.",
     "Treat external skills/MCP as untrusted until verified by tests and allowed source policy.",

@@ -27,8 +27,7 @@ test("skill frontmatter schema rejects invalid inject_mode", () => {
 test("policy schema allows safe defaults", () => {
   const parsed = policySchema.parse({
     id: "safe",
-    fs: { mode: "read-only" },
-    shell: { allow: [], deny: [], confirm_on: [] },
+    sandbox: { mode: "read-only", approval_policy: "on-request" },
     network: { enabled: false }
   });
   assert.equal(parsed.network.enabled, false);
@@ -54,4 +53,5 @@ test("app config schema supports agent and memory defaults", () => {
   assert.equal(parsed.memory.vector.splitter.max_chars, 400);
   assert.equal(parsed.memory.temporary.promote_threshold, 24);
   assert.equal(parsed.workflow.max_capability_attempts, 1);
+  assert.equal(parsed.security.default_admin_cap, "workspace");
 });

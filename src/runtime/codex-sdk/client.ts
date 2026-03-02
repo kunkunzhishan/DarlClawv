@@ -13,13 +13,6 @@ export type RunThreadArgs = {
   emitDeltaEvents?: boolean;
   outputSchema?: unknown;
   signal?: AbortSignal;
-  fileChangeGuard?: {
-    role: string;
-    allowedWriteRoots: string[];
-    forbiddenWriteRoots?: string[];
-    forbiddenWriteRootExceptions?: string[];
-    addOnlyWriteRoots?: string[];
-  };
 };
 
 export type RunThreadResult = {
@@ -31,60 +24,6 @@ export type RunThreadResult = {
   };
   threadId: string | null;
 };
-
-function isPathInsideRoot(candidateAbs: string, rootAbs: string): boolean {
-  const rel = path.relative(rootAbs, candidateAbs);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
-function resolveCandidatePath(candidatePath: string, workingDirectory: string): string {
-  return path.isAbsolute(candidatePath)
-    ? path.resolve(candidatePath)
-    : path.resolve(workingDirectory, candidatePath);
-}
-
-export function isPathInsideAnyRoot(args: {
-  candidatePath: string;
-  workingDirectory: string;
-  roots: string[];
-}): boolean {
-  const candidateAbs = resolveCandidatePath(args.candidatePath, args.workingDirectory);
-  return args.roots.some((root) => isPathInsideRoot(candidateAbs, path.resolve(root)));
-}
-
-export function violatesAddOnlyRoots(args: {
-  changeKind: "add" | "delete" | "update";
-  candidatePath: string;
-  workingDirectory: string;
-  addOnlyRoots: string[];
-}): boolean {
-  return (
-    args.changeKind !== "add" &&
-    isPathInsideAnyRoot({
-      candidatePath: args.candidatePath,
-      workingDirectory: args.workingDirectory,
-      roots: args.addOnlyRoots
-    })
-  );
-}
-
-export function isPathAllowedByRoots(args: {
-  candidatePath: string;
-  workingDirectory: string;
-  allowedWriteRoots: string[];
-}): boolean {
-  const candidateAbs = resolveCandidatePath(args.candidatePath, args.workingDirectory);
-  return args.allowedWriteRoots.some((root) => isPathInsideRoot(candidateAbs, path.resolve(root)));
-}
-
-export function isPathBlockedByRoots(args: {
-  candidatePath: string;
-  workingDirectory: string;
-  forbiddenRoots: string[];
-}): boolean {
-  const candidateAbs = resolveCandidatePath(args.candidatePath, args.workingDirectory);
-  return args.forbiddenRoots.some((root) => isPathInsideRoot(candidateAbs, path.resolve(root)));
-}
 
 export class CodexSdkRuntimeClient {
   private readonly codex: Codex;
@@ -139,63 +78,6 @@ export class CodexSdkRuntimeClient {
       }
 
       if (item.type === "file_change") {
-        if (args.fileChangeGuard) {
-          const workingDirectory = this.threadOptions.workingDirectory ?? process.cwd();
-          const exceptionRoots = args.fileChangeGuard?.forbiddenWriteRootExceptions ?? [];
-          const blocked = item.changes
-            .filter((change) =>
-              isPathBlockedByRoots({
-                candidatePath: change.path,
-                workingDirectory,
-                forbiddenRoots: args.fileChangeGuard?.forbiddenWriteRoots ?? []
-              }) &&
-              !isPathInsideAnyRoot({
-                candidatePath: change.path,
-                workingDirectory,
-                roots: exceptionRoots
-              })
-            )
-            .map((change) => change.path);
-
-          if (blocked.length > 0) {
-            throw new Error(
-              `File change blocked by forbidden roots for role=${args.fileChangeGuard.role}: ${blocked.join(", ")}`
-            );
-          }
-
-          const violations = item.changes
-            .filter((change) =>
-              !isPathAllowedByRoots({
-                candidatePath: change.path,
-                workingDirectory,
-                allowedWriteRoots: args.fileChangeGuard?.allowedWriteRoots ?? []
-              })
-            )
-            .map((change) => change.path);
-
-          if (violations.length > 0) {
-            throw new Error(
-              `File change outside allowed roots for role=${args.fileChangeGuard.role}: ${violations.join(", ")}`
-            );
-          }
-
-          const addOnlyViolations = item.changes
-            .filter((change) =>
-              violatesAddOnlyRoots({
-                changeKind: change.kind,
-                candidatePath: change.path,
-                workingDirectory,
-                addOnlyRoots: args.fileChangeGuard?.addOnlyWriteRoots ?? []
-              })
-            )
-            .map((change) => `${change.kind}:${change.path}`);
-
-          if (addOnlyViolations.length > 0) {
-            throw new Error(
-              `File change violates add-only roots for role=${args.fileChangeGuard.role}: ${addOnlyViolations.join(", ")}`
-            );
-          }
-        }
         continue;
       }
 

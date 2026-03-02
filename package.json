@@ -1,10 +1,10 @@
 {
-  "name": "mydarl",
+  "name": "darlclawv",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "mydarl": "dist/src/cli/index.js"
+    "darlclawv": "dist/src/cli/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

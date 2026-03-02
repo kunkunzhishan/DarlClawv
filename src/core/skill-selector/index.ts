@@ -281,7 +281,6 @@ export async function selectSkillsForTask(args: {
   localMemorySummary?: string;
   globalMemorySummary?: string;
   onEvent?: (event: RunEvent) => void;
-  forbiddenRoots?: string[];
   installIntent?: boolean;
   enforceSkillIds?: string[];
 }): Promise<SkillSelectionResult> {
@@ -309,12 +308,7 @@ export async function selectSkillsForTask(args: {
       thread,
       input: prompt,
       emitDeltaEvents: false,
-      onEvent: args.onEvent,
-      fileChangeGuard: {
-        role: "skill_selector",
-        allowedWriteRoots: [],
-        forbiddenWriteRoots: args.forbiddenRoots || []
-      }
+      onEvent: args.onEvent
     });
     const parsed = parseSelection(turn.outputText, args.skillLibrary);
     if (parsed) {

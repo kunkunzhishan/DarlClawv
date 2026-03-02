@@ -1,9 +1,6 @@
 id: safe-default
-fs:
+sandbox:
   mode: workspace-write
-shell:
-  allow: []
-  deny: []
-  confirm_on: []
+  approval_policy: on-request
 network:
   enabled: true

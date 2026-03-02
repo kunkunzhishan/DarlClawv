@@ -7,7 +7,7 @@ import { loadSkills } from "../src/registry/index.js";
 import { parseYaml } from "../src/utils/yaml.js";
 
 test("loadSkills merges shorthand selector metadata from skills.md", async () => {
-  const configRoot = await mkdtemp(path.join(os.tmpdir(), "mydarl-skills-test-"));
+  const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skills-test-"));
   const skillDir = path.join(configRoot, "skills", "repo-basics");
   await mkdir(skillDir, { recursive: true });
 
@@ -87,7 +87,7 @@ skills:
 });
 
 test("loadSkills records package entrypoint in global skills index", async () => {
-  const configRoot = await mkdtemp(path.join(os.tmpdir(), "mydarl-skills-test-"));
+  const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skills-test-"));
   const skillDir = path.join(configRoot, "skills", "tooling");
   await mkdir(skillDir, { recursive: true });
 
@@ -125,7 +125,7 @@ test: "python3 -m pytest config/skills/tooling/tests"
 });
 
 test("loadSkills excludes disabled skill from index state", async () => {
-  const configRoot = await mkdtemp(path.join(os.tmpdir(), "mydarl-skills-test-"));
+  const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skills-test-"));
   const skillDir = path.join(configRoot, "skills", "legacy");
   await mkdir(skillDir, { recursive: true });
 

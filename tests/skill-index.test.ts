@@ -6,7 +6,7 @@ import path from "node:path";
 import { loadSkillIndex } from "../src/registry/skill-index.js";
 
 test("loadSkillIndex parses recommended sources and trust fields", async () => {
-  const configRoot = await mkdtemp(path.join(os.tmpdir(), "mydarl-skill-index-"));
+  const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skill-index-"));
   await mkdir(path.join(configRoot, "skills"), { recursive: true });
   await writeFile(
     path.join(configRoot, "skills", "index.yaml"),

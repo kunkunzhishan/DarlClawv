@@ -20,7 +20,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function defaultRuntimeLibraryPaths(root = path.resolve(".mydarl-runtime/staging")): RuntimeLibraryPaths {
+export function defaultRuntimeLibraryPaths(root = path.resolve(".darlclawv-runtime/staging")): RuntimeLibraryPaths {
   return {
     root,
     scriptsDir: path.join(root, "scripts"),

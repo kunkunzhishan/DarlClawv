@@ -20,7 +20,7 @@ test("listAgentSpecIds includes default", async () => {
 });
 
 test("loadAgentSpec supports skill_allowlist metadata", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "mydarl-agent-spec-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-agent-spec-"));
   const agentDir = path.join(root, "agents", "custom");
   await mkdir(agentDir, { recursive: true });
   await writeFile(
@@ -51,7 +51,7 @@ p
 });
 
 test("loadAgentSpec merges global.md sections into agent.md", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "mydarl-agent-spec-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-agent-spec-"));
   const agentsRoot = path.join(root, "agents");
   const agentDir = path.join(agentsRoot, "custom");
   await mkdir(agentDir, { recursive: true });

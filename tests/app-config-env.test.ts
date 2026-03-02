@@ -6,7 +6,7 @@ import path from "node:path";
 import { loadAppConfig } from "../src/registry/index.js";
 
 test("loadAppConfig reads memory embedding and splitter from env overrides", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "mydarl-config-env-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-config-env-"));
   await mkdir(root, { recursive: true });
   await writeFile(
     path.join(root, "app.yaml"),

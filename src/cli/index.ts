@@ -22,16 +22,31 @@ loadDotEnv();
 
 const program = new Command();
 
-program.name("mydarl").description("Control-plane shell around native Codex runtime").version("0.1.0");
+program.name("darlclawv").description("Control-plane shell around native Codex runtime").version("0.1.0");
 
 program
   .command("run")
   .requiredOption("--task <text>", "task text")
   .option("--agent <id>", "optional preferred agent id")
   .option("--workspace <path>", "task workspace path (default: current working directory)")
-  .option("--confirm", "confirm running tasks that hit confirm_on policy patterns")
+  .option("--run-mode <mode>", "permission mode: managed|direct", "managed")
+  .option("--admin-cap <profile>", "admin max grant profile: safe|workspace|full")
   .option("--json", "print structured JSON output instead of plain result text")
   .action(async (opts) => {
+    const runMode = String(opts.runMode || "managed").toLowerCase();
+    if (!["managed", "direct"].includes(runMode)) {
+      console.error(`invalid run mode: ${opts.runMode}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const adminCap = opts.adminCap ? String(opts.adminCap).toLowerCase() : undefined;
+    if (adminCap && !["safe", "workspace", "full"].includes(adminCap)) {
+      console.error(`invalid admin cap: ${opts.adminCap}`);
+      process.exitCode = 1;
+      return;
+    }
+
     const appConfig = await loadAppConfig();
     if (appConfig.web.autostart) {
       const observatory = await ensureWebObservatory(appConfig.web);
@@ -43,8 +58,9 @@ program
     const result = await runTask({
       agentId: opts.agent,
       task: opts.task,
-      confirm: Boolean(opts.confirm),
-      taskWorkspace: opts.workspace
+      taskWorkspace: opts.workspace,
+      runMode: runMode as "managed" | "direct",
+      adminCap: adminCap as "safe" | "workspace" | "full" | undefined
     }, opts.json
       ? undefined
       : {

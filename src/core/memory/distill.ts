@@ -1,6 +1,6 @@
 import type { Thread } from "@openai/codex-sdk";
 import type { EngineRunResult, RunEvent } from "../../types/contracts.js";
-import type { CodexSdkRuntimeClient, RunThreadArgs } from "../../runtime/codex-sdk/client.js";
+import type { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
 
 const MEMORY_DISTILL_SCHEMA = {
   type: "object",
@@ -97,7 +97,6 @@ export async function distillMemoryWithCurrentAgent(args: {
   task: string;
   result: EngineRunResult;
   onEvent?: (event: RunEvent) => void;
-  fileChangeGuard?: RunThreadArgs["fileChangeGuard"];
 }): Promise<DistilledMemory> {
   const prompt = [
     "Summarize durable memory from the task execution.",
@@ -116,8 +115,7 @@ export async function distillMemoryWithCurrentAgent(args: {
       input: prompt,
       emitDeltaEvents: false,
       outputSchema: MEMORY_DISTILL_SCHEMA,
-      onEvent: args.onEvent,
-      fileChangeGuard: args.fileChangeGuard
+      onEvent: args.onEvent
     });
     const parsed = parseDistilledMemory(turn.outputText);
     if (parsed) {
@@ -136,7 +134,6 @@ export async function classifyTemporaryContextForVector(args: {
   agentId: string;
   entries: Array<{ ts: string; task: string; status: string; outputSummary: string }>;
   onEvent?: (event: RunEvent) => void;
-  fileChangeGuard?: RunThreadArgs["fileChangeGuard"];
 }): Promise<TemporaryPromotionDecision> {
   const compactEntries = args.entries.slice(-30).map((entry) => ({
     ts: entry.ts,
@@ -162,8 +159,7 @@ export async function classifyTemporaryContextForVector(args: {
       input: prompt,
       emitDeltaEvents: false,
       outputSchema: TEMPORARY_PROMOTION_SCHEMA,
-      onEvent: args.onEvent,
-      fileChangeGuard: args.fileChangeGuard
+      onEvent: args.onEvent
     });
     const parsed = parseTemporaryPromotion(turn.outputText);
     if (parsed) {

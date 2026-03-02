@@ -14,8 +14,7 @@ test("compilePrompt produces three-layer structure with libraries", () => {
   };
   const policy: Policy = {
     id: "p1",
-    fs: { mode: "workspace-write" },
-    shell: { allow: [], deny: [], confirm_on: [] },
+    sandbox: { mode: "workspace-write", approval_policy: "on-request" },
     network: { enabled: true }
   };
   const skill: Skill = {
@@ -74,8 +73,7 @@ test("pickPreferredAgent honors pinned id and fallback", () => {
 test("compileAgentPackPrompt injects pack sections and whitelisted skills", () => {
   const policy: Policy = {
     id: "p1",
-    fs: { mode: "workspace-write" },
-    shell: { allow: [], deny: [], confirm_on: [] },
+    sandbox: { mode: "workspace-write", approval_policy: "on-request" },
     network: { enabled: true }
   };
 
@@ -120,8 +118,7 @@ test("compileAgentPackPrompt injects pack sections and whitelisted skills", () =
 test("compileAgentSpecPrompt injects memory summaries and skill metadata", () => {
   const policy: Policy = {
     id: "p1",
-    fs: { mode: "workspace-write" },
-    shell: { allow: [], deny: [], confirm_on: [] },
+    sandbox: { mode: "workspace-write", approval_policy: "on-request" },
     network: { enabled: true }
   };
 
@@ -167,8 +164,7 @@ test("compileAgentSpecPrompt injects memory summaries and skill metadata", () =>
 test("compileAgentSpecPrompt can inject only selected skills", () => {
   const policy: Policy = {
     id: "p1",
-    fs: { mode: "workspace-write" },
-    shell: { allow: [], deny: [], confirm_on: [] },
+    sandbox: { mode: "workspace-write", approval_policy: "on-request" },
     network: { enabled: true }
   };
 

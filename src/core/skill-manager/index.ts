@@ -1,5 +1,4 @@
 import path from "node:path";
-import type { Thread } from "@openai/codex-sdk";
 import { compileAgentPackPrompt } from "../prompt-compiler/index.js";
 import { classifyRepairPriorityLayer, sortSkillsByTrustAndPopularity, validateSkillSourceRef } from "../repair/index.js";
 import { incrementCapabilityAttempt, isWorkflowExpired } from "../workflow/session.js";
@@ -107,7 +106,6 @@ export async function resolveCapability(args: {
   policy: Policy;
   pack: AgentPack;
   skillLibrary: Skill[];
-  thread?: Thread;
   sdkClient: CodexSdkRuntimeClient;
   runtimePaths?: RuntimeLibraryPaths;
   controlPlaneRoot?: string;
@@ -201,19 +199,14 @@ export async function resolveCapability(args: {
       skillLibrary: prioritizedSkillLibrary
     });
 
-    const capabilityThread = args.thread ?? args.sdkClient.startThread();
+    const capabilityThread = args.sdkClient.startThread();
     let turn;
     try {
       turn = await args.sdkClient.runThread({
         thread: capabilityThread,
         input: prompt.fullText,
         emitDeltaEvents: false,
-        onEvent: args.onEvent,
-        fileChangeGuard: {
-          role: "repair_resolver",
-          allowedWriteRoots: [runtimePaths.root],
-          forbiddenWriteRoots: args.controlPlaneRoot ? [path.resolve(args.controlPlaneRoot)] : []
-        }
+        onEvent: args.onEvent
       });
     } catch (runError) {
       const failureReason = runError instanceof Error ? runError.message : String(runError);

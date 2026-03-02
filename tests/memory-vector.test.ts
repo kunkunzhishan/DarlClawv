@@ -61,12 +61,15 @@ function baseConfig(root: string): AppConfig {
       capability_timeout_ms: 600000,
       enable_skill_manager: false,
       allow_promote_to_config_skills: true
+    },
+    security: {
+      default_admin_cap: "workspace"
     }
   };
 }
 
 test("layered recall returns temporary + personal + group memory", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "mydarl-memory-vector-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-memory-vector-"));
   const config = baseConfig(root);
   const paths = resolveMemoryPaths(config, "default");
   const options = resolveMemoryRuntimeOptions(config);
@@ -116,7 +119,7 @@ test("layered recall returns temporary + personal + group memory", async () => {
 });
 
 test("compactVectorMemories de-duplicates near-identical personal memories", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "mydarl-memory-vector-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-memory-vector-"));
   const config = baseConfig(root);
   const paths = resolveMemoryPaths(config, "default");
   const options = resolveMemoryRuntimeOptions(config);
@@ -149,7 +152,7 @@ test("compactVectorMemories de-duplicates near-identical personal memories", asy
 });
 
 test("retainTemporaryContext keeps only latest entries", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "mydarl-memory-vector-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-memory-vector-"));
   const config = baseConfig(root);
   const paths = resolveMemoryPaths(config, "default");
   const options = resolveMemoryRuntimeOptions(config);
@@ -180,7 +183,7 @@ test("retainTemporaryContext keeps only latest entries", async () => {
 });
 
 test("vector append splits long text and supports embedding fallback", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "mydarl-memory-vector-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "darlclawv-memory-vector-"));
   const config = baseConfig(root);
   config.memory.vector = {
     ...(config.memory.vector || {}),

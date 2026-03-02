@@ -7,8 +7,8 @@ engine:
   model: gpt-5-codex
   timeout_ms: 120000
 memory:
-  local_store_root: .mydarl-runtime/memory/agents
-  global_store_path: .mydarl-runtime/memory/global/distilled.jsonl
+  local_store_root: .darlclawv-runtime/memory/agents
+  global_store_path: .darlclawv-runtime/memory/global/distilled.jsonl
   vector:
     dimension: 96
     personal_recall_top_k: 6
@@ -43,3 +43,6 @@ workflow:
   capability_timeout_ms: 600000
   enable_skill_manager: false
   allow_promote_to_config_skills: true
+security:
+  default_admin_cap: workspace
+  admin_stamp_path: config/security/admin-steel-stamp.md

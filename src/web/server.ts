@@ -51,7 +51,7 @@ function html(): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MyDarl Observatory</title>
+  <title>DarlClawv Observatory</title>
   <style>
     :root {
       --bg0: #0b1118;
@@ -243,7 +243,7 @@ function html(): string {
   <div class="layout">
     <aside class="sidebar">
       <div class="head">
-        <h1 class="title">MyDarl Observatory</h1>
+        <h1 class="title">DarlClawv Observatory</h1>
         <div class="sub">Run timeline, capability loop, memory and guard violations</div>
         <div class="controls">
           <button class="btn" id="refreshBtn">Refresh</button>
@@ -572,7 +572,7 @@ export async function startWebServer(port: number, host = "127.0.0.1"): Promise<
 
     if (bound) {
       const displayHost = host === "0.0.0.0" ? "localhost" : host;
-      console.log(`MyDarl observatory: http://${displayHost}:${bound}`);
+      console.log(`DarlClawv observatory: http://${displayHost}:${bound}`);
       return bound;
     }
   }

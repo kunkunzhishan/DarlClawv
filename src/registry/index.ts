@@ -212,8 +212,8 @@ export async function loadAppConfig(configRoot = path.resolve("config")): Promis
       timeout_ms: parsed.engine.timeout_ms ?? 120000
     },
     memory: {
-      local_store_root: parsed.memory?.local_store_root || ".mydarl-runtime/memory/agents",
-      global_store_path: parsed.memory?.global_store_path || ".mydarl-runtime/memory/global/distilled.jsonl",
+      local_store_root: parsed.memory?.local_store_root || ".darlclawv-runtime/memory/agents",
+      global_store_path: parsed.memory?.global_store_path || ".darlclawv-runtime/memory/global/distilled.jsonl",
       vector: {
         dimension: envNumber("MYDARL_MEMORY_VECTOR_DIMENSION") ?? parsed.memory?.vector?.dimension ?? 96,
         personal_recall_top_k:
@@ -283,6 +283,10 @@ export async function loadAppConfig(configRoot = path.resolve("config")): Promis
       capability_timeout_ms: parsed.workflow?.capability_timeout_ms ?? 600000,
       enable_skill_manager: parsed.workflow?.enable_skill_manager ?? false,
       allow_promote_to_config_skills: parsed.workflow?.allow_promote_to_config_skills ?? true
+    },
+    security: {
+      default_admin_cap: parsed.security?.default_admin_cap ?? "workspace",
+      admin_stamp_path: parsed.security?.admin_stamp_path ?? "config/security/admin-steel-stamp.md"
     }
   };
 }
@@ -315,10 +319,9 @@ export async function loadPolicies(configRoot = path.resolve("config")): Promise
   const items = await Promise.all(files.map((file) => readYamlFile<Policy>(policySchema, file)));
   const normalized = items.map((item) => ({
     ...item,
-    shell: {
-      allow: item.shell.allow ?? [],
-      deny: item.shell.deny ?? [],
-      confirm_on: item.shell.confirm_on ?? []
+    sandbox: {
+      mode: item.sandbox.mode,
+      approval_policy: item.sandbox.approval_policy ?? "on-request"
     },
     network: {
       enabled: item.network.enabled ?? false

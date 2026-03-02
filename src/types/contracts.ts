@@ -70,15 +70,14 @@ export type SkillRecommendedSource = {
   enabled: boolean;
 };
 
+export type PermissionProfile = "safe" | "workspace" | "full";
+export type RunMode = "managed" | "direct";
+
 export type Policy = {
   id: string;
-  fs: {
-    mode: "read-only" | "workspace-write";
-  };
-  shell: {
-    allow: string[];
-    deny: string[];
-    confirm_on: string[];
+  sandbox: {
+    mode: "read-only" | "workspace-write" | "danger-full-access";
+    approval_policy: "never" | "on-request" | "on-failure" | "untrusted";
   };
   network: {
     enabled: boolean;
@@ -146,13 +145,18 @@ export type AppConfig = {
     enable_skill_manager: boolean;
     allow_promote_to_config_skills: boolean;
   };
+  security: {
+    default_admin_cap: PermissionProfile;
+    admin_stamp_path?: string;
+  };
 };
 
 export type RunRequest = {
   agentId?: string;
   task: string;
   policyId?: string;
-  confirm?: boolean;
+  adminCap?: PermissionProfile;
+  runMode?: RunMode;
   workflowId?: string;
   disableSkillManager?: boolean;
   taskWorkspace?: string;
@@ -198,6 +202,18 @@ export type CapabilityFeedback = {
   capability_id: string;
   ok: boolean;
   error?: string;
+};
+
+export type PermissionRequest = {
+  type: "PERMISSION_REQUEST";
+  requested_profile: PermissionProfile;
+  reason: string;
+};
+
+export type PermissionDecision = {
+  decision: "grant" | "deny" | "escalate";
+  profile: PermissionProfile;
+  reason: string;
 };
 
 export type CapabilityProtocolMessage =
@@ -310,6 +326,25 @@ export type RunEvent =
       ts: string;
     }
   | { type: "capability.validation.failed"; workflowId: string; capabilityId: string; reason: string; ts: string }
+  | { type: "permission.requested"; runId: string; requestedProfile: PermissionProfile; reason: string; ts: string }
+  | {
+      type: "permission.admin.decided";
+      runId: string;
+      decision: "grant" | "deny" | "escalate";
+      requestedProfile: PermissionProfile;
+      grantedProfile: PermissionProfile;
+      reason: string;
+      ts: string;
+    }
+  | {
+      type: "permission.user.decided";
+      runId: string;
+      approved: boolean;
+      requestedProfile: PermissionProfile;
+      grantedProfile?: PermissionProfile;
+      reason: string;
+      ts: string;
+    }
   | {
       type: "repair.triggered";
       workflowId: string;

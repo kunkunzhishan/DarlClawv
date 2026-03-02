@@ -85,13 +85,9 @@ export const legacySkillYamlSchema = z.object({
 
 export const policySchema = z.object({
   id: z.string().min(1),
-  fs: z.object({
-    mode: z.enum(["read-only", "workspace-write"])
-  }),
-  shell: z.object({
-    allow: z.array(z.string()).default([]),
-    deny: z.array(z.string()).default([]),
-    confirm_on: z.array(z.string()).default([])
+  sandbox: z.object({
+    mode: z.enum(["read-only", "workspace-write", "danger-full-access"]),
+    approval_policy: z.enum(["never", "on-request", "on-failure", "untrusted"]).default("on-request")
   }),
   network: z.object({
     enabled: z.boolean().default(false)
@@ -117,8 +113,8 @@ export const appConfigSchema = z.object({
   }),
   memory: z
     .object({
-      local_store_root: z.string().min(1).default(".mydarl-runtime/memory/agents"),
-      global_store_path: z.string().min(1).default(".mydarl-runtime/memory/global/distilled.jsonl"),
+      local_store_root: z.string().min(1).default(".darlclawv-runtime/memory/agents"),
+      global_store_path: z.string().min(1).default(".darlclawv-runtime/memory/global/distilled.jsonl"),
       vector: z
         .object({
           dimension: z.number().int().positive().default(96),
@@ -174,6 +170,12 @@ export const appConfigSchema = z.object({
       capability_timeout_ms: z.number().int().positive().default(600000),
       enable_skill_manager: z.boolean().default(false),
       allow_promote_to_config_skills: z.boolean().default(true)
+    })
+    .default({}),
+  security: z
+    .object({
+      default_admin_cap: z.enum(["safe", "workspace", "full"]).default("workspace"),
+      admin_stamp_path: z.string().min(1).default("config/security/admin-steel-stamp.md")
     })
     .default({})
 });

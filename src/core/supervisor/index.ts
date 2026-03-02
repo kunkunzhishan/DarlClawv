@@ -1,14 +1,17 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline/promises";
 import { compileAgentSpecPrompt } from "../prompt-compiler/index.js";
-import { evaluatePolicy } from "../policy-engine/index.js";
 import { shouldRunCompaction } from "../memory/compaction.js";
 import { classifyTemporaryContextForVector, distillMemoryWithCurrentAgent } from "../memory/distill.js";
 import { findRepairSkillIds, isInstallIntentTask } from "../repair/index.js";
 import { selectSkillsForTask } from "../skill-selector/index.js";
 import { resolveCapability } from "../skill-manager/index.js";
 import { parseCapabilityRequest } from "../skill-manager/protocol.js";
+import { decidePermissionByAdmin } from "../security/admin-approver.js";
+import { toRuntimePermission, minProfile } from "../security/permissions.js";
+import { parsePermissionRequest } from "../security/protocol.js";
 import {
   appendGlobalMemory,
   appendGroupVectorMemories,
@@ -33,7 +36,7 @@ import { loadAppConfig, loadPolicies, loadSkills } from "../../registry/index.js
 import { loadSkillIndex } from "../../registry/skill-index.js";
 import { ensureRuntimeLibrary, loadRuntimeSkills } from "../../runtime/library/index.js";
 import { appendEvent, createRun, finalizeRun, writeSnapshot } from "../../storage/index.js";
-import type { AgentSpec, EngineRunResult, RunEvent, RunRequest } from "../../types/contracts.js";
+import type { AgentSpec, EngineRunResult, PermissionProfile, Policy, RunEvent, RunMode, RunRequest } from "../../types/contracts.js";
 import { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
 
 function nowIso(): string {
@@ -65,6 +68,46 @@ function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
 function summarizeResultForMemory(result: EngineRunResult): string {
   const base = (result.outputText || result.error || "").trim();
   return base.length > 1000 ? `${base.slice(0, 1000)}...` : base;
+}
+
+function profileFromPolicy(policy: Policy): PermissionProfile {
+  if (policy.sandbox.mode === "danger-full-access") {
+    return "full";
+  }
+  if (policy.sandbox.mode === "workspace-write") {
+    return "workspace";
+  }
+  return "safe";
+}
+
+function policyFromProfile(profile: PermissionProfile): Policy {
+  const runtime = toRuntimePermission(profile);
+  return {
+    id: `runtime-${profile}`,
+    sandbox: {
+      mode: runtime.sandboxMode,
+      approval_policy: runtime.approvalPolicy
+    },
+    network: {
+      enabled: runtime.networkAccessEnabled
+    }
+  };
+}
+
+async function askUserEscalation(args: {
+  requestedProfile: PermissionProfile;
+  reason: string;
+}): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(
+      `Permission escalation required: profile=${args.requestedProfile}. Reason: ${args.reason}. Approve? [y/N] `
+    );
+    const normalized = answer.trim().toLowerCase();
+    return normalized === "y" || normalized === "yes";
+  } finally {
+    rl.close();
+  }
 }
 
 function repairPackFromAgentSpec(spec: AgentSpec): AgentPack {
@@ -115,10 +158,14 @@ export async function runTask(
   }
 
   const policyId = request.policyId || appConfig.default_policy;
-  const policy = policies.get(policyId);
-  if (!policy) {
+  const configuredPolicy = policies.get(policyId);
+  if (!configuredPolicy) {
     throw new Error(`Policy not found: ${policyId}`);
   }
+  const runMode: RunMode = request.runMode ?? "managed";
+  const adminCap: PermissionProfile = request.adminCap ?? appConfig.security.default_admin_cap;
+  let currentProfile = minProfile(profileFromPolicy(configuredPolicy), adminCap);
+  let currentPolicy = policyFromProfile(currentProfile);
 
   const taskWorkspace = path.resolve(request.taskWorkspace || process.cwd());
   const controlPlaneRoot = path.resolve(
@@ -160,7 +207,7 @@ export async function runTask(
 
   await Promise.all([
     writeSnapshot(ctx, "app", appConfig),
-    writeSnapshot(ctx, "policy", policy),
+    writeSnapshot(ctx, "policy", configuredPolicy),
     writeSnapshot(ctx, "agent", executionSpec),
     writeSnapshot(
       ctx,
@@ -177,38 +224,12 @@ export async function runTask(
       taskWorkspace,
       controlPlaneRoot,
       workspaceInsideControlPlane,
-      allowControlPlaneSkillWrites
+      allowControlPlaneSkillWrites,
+      runMode,
+      adminCap,
+      initialWorkerProfile: currentProfile
     })
   ]);
-
-  const decision = evaluatePolicy(request.task, policy);
-  if (!decision.ok) {
-    const errorText = `Policy denied request: ${decision.reasons.join("; ")}`;
-    await emit({ type: "run.error", message: errorText, ts: nowIso() });
-    const failed: EngineRunResult = {
-      status: "failed",
-      outputText: "",
-      error: errorText,
-      failureKind: "tool"
-    };
-    await emit({ type: "run.finished", status: "failed", ts: nowIso() });
-    await finalizeRun(ctx, failed);
-    return { runId: ctx.runId, result: failed };
-  }
-
-  if (decision.confirmations.length > 0 && !request.confirm) {
-    const errorText = `Policy requires explicit confirmation for patterns: ${decision.confirmations.join(", ")}. Re-run with --confirm.`;
-    await emit({ type: "run.error", message: errorText, ts: nowIso() });
-    const failed: EngineRunResult = {
-      status: "failed",
-      outputText: "",
-      error: errorText,
-      failureKind: "tool"
-    };
-    await emit({ type: "run.finished", status: "failed", ts: nowIso() });
-    await finalizeRun(ctx, failed);
-    return { runId: ctx.runId, result: failed };
-  }
 
   const workflow = await initWorkflowState({
     ctx,
@@ -234,31 +255,42 @@ export async function runTask(
     return [...byId.values()];
   };
   const mainAdditionalDirectories = [configSkillsRoot, runtimeRoot].filter((dir, idx, all) => all.indexOf(dir) === idx && existsSync(dir));
-
-  const mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
+  let mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
     workingDirectory: taskWorkspace,
-    sandboxMode: "danger-full-access",
-    approvalPolicy: "never",
+    ...toRuntimePermission(currentProfile),
     skipGitRepoCheck: true,
-    networkAccessEnabled: policy.network.enabled,
     additionalDirectories: mainAdditionalDirectories
+  });
+  const adminSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
+    workingDirectory: taskWorkspace,
+    ...toRuntimePermission("safe"),
+    skipGitRepoCheck: true
   });
   const selectorSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
     workingDirectory: taskWorkspace,
-    sandboxMode: "danger-full-access",
-    approvalPolicy: "never",
+    ...toRuntimePermission("safe"),
     skipGitRepoCheck: true,
-    networkAccessEnabled: false
   });
   const memorySdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
     workingDirectory: taskWorkspace,
-    sandboxMode: "danger-full-access",
-    approvalPolicy: "never",
+    ...toRuntimePermission("safe"),
     skipGitRepoCheck: true,
-    networkAccessEnabled: false
   });
 
-  const mainThread = workflow.threadBindings.main
+  const rebuildMainWorker = (profile: PermissionProfile): void => {
+    currentProfile = profile;
+    currentPolicy = policyFromProfile(profile);
+    mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
+      workingDirectory: taskWorkspace,
+      ...toRuntimePermission(profile),
+      skipGitRepoCheck: true,
+      additionalDirectories: mainAdditionalDirectories
+    });
+    mainThread = mainSdkClient.startThread();
+    mainThreadBound = false;
+  };
+
+  let mainThread = workflow.threadBindings.main
     ? mainSdkClient.resumeThread(workflow.threadBindings.main)
     : mainSdkClient.startThread();
   const memoryThread = memorySdkClient.startThread();
@@ -317,7 +349,6 @@ export async function runTask(
       localMemorySummary,
       globalMemorySummary,
       onEvent: emitStream,
-      forbiddenRoots: [controlPlaneRoot, taskWorkspace],
       installIntent,
       enforceSkillIds: forceRepairSelection ? repairSkillIds : []
     });
@@ -333,7 +364,7 @@ export async function runTask(
 
     const prompt = compileAgentSpecPrompt({
       task: nextMainTask,
-      policy,
+      policy: currentPolicy,
       spec: executionSpec,
       skillLibrary: allSkills,
       selectedSkillIds: selectedSkills.selectedSkillIds,
@@ -353,16 +384,7 @@ export async function runTask(
       mainTurn = await mainSdkClient.runThread({
         thread: mainThread,
         input: prompt.fullText,
-        onEvent: emitStream,
-        fileChangeGuard: {
-          role: "main",
-          allowedWriteRoots: workspaceInsideControlPlane
-            ? [configSkillsRoot, runtimeRoot]
-            : [taskWorkspace, configSkillsRoot, runtimeRoot],
-          forbiddenWriteRoots: [controlPlaneRoot],
-          forbiddenWriteRootExceptions: [configSkillsRoot, runtimeRoot],
-          addOnlyWriteRoots: [configSkillsRoot]
-        }
+        onEvent: emitStream
       });
     } catch (runError) {
       status = "failed";
@@ -385,6 +407,94 @@ export async function runTask(
 
     usage = mainTurn.usage;
     finalOutput = mainTurn.outputText.trim();
+
+    const permissionRequest = parsePermissionRequest(mainTurn.outputText);
+    if (permissionRequest) {
+      await emit({
+        type: "permission.requested",
+        runId: ctx.runId,
+        requestedProfile: permissionRequest.requested_profile,
+        reason: permissionRequest.reason,
+        ts: nowIso()
+      });
+
+      const adminDecision = runMode === "managed"
+        ? await decidePermissionByAdmin({
+            sdkClient: adminSdkClient,
+            task: request.task,
+            request: permissionRequest,
+            adminCap,
+            steelStampPath: appConfig.security.admin_stamp_path,
+            onEvent: emitStream
+          })
+        : {
+            decision: "escalate" as const,
+            profile: permissionRequest.requested_profile,
+            reason: "direct mode bypasses admin and requires user approval"
+          };
+
+      await emit({
+        type: "permission.admin.decided",
+        runId: ctx.runId,
+        decision: adminDecision.decision,
+        requestedProfile: permissionRequest.requested_profile,
+        grantedProfile: adminDecision.profile,
+        reason: adminDecision.reason,
+        ts: nowIso()
+      });
+
+      if (adminDecision.decision === "grant") {
+        rebuildMainWorker(adminDecision.profile);
+        nextMainTask = [
+          "Permission granted. Continue the original task immediately.",
+          `Original task: ${request.task}`,
+          `Granted profile: ${adminDecision.profile}`,
+          `Reason: ${adminDecision.reason}`
+        ].join("\n");
+        finalOutput = "";
+        continue;
+      }
+
+      if (adminDecision.decision === "deny") {
+        status = "failed";
+        failureKind = "tool";
+        error = `Permission denied by admin: ${adminDecision.reason}`;
+        finalOutput = "";
+        break;
+      }
+
+      const approved = await askUserEscalation({
+        requestedProfile: adminDecision.profile,
+        reason: adminDecision.reason
+      });
+
+      await emit({
+        type: "permission.user.decided",
+        runId: ctx.runId,
+        approved,
+        requestedProfile: permissionRequest.requested_profile,
+        grantedProfile: approved ? adminDecision.profile : undefined,
+        reason: approved ? "approved by user escalation" : "rejected by user",
+        ts: nowIso()
+      });
+
+      if (!approved) {
+        status = "failed";
+        failureKind = "tool";
+        error = `User rejected permission escalation for profile ${permissionRequest.requested_profile}`;
+        finalOutput = "";
+        break;
+      }
+
+      rebuildMainWorker(adminDecision.profile);
+      nextMainTask = [
+        "Permission escalation approved by user. Continue the original task immediately.",
+        `Original task: ${request.task}`,
+        `Granted profile: ${adminDecision.profile}`
+      ].join("\n");
+      finalOutput = "";
+      continue;
+    }
 
     const capabilityRequest = parseCapabilityRequest(mainTurn.outputText);
     if (capabilityRequest) {
@@ -416,7 +526,7 @@ export async function runTask(
         workflow: currentWorkflow,
         request: capabilityRequest,
         appConfig,
-        policy,
+        policy: currentPolicy,
         pack: repairPack,
         skillLibrary: candidateSkills,
         sdkClient: mainSdkClient,
@@ -532,12 +642,7 @@ export async function runTask(
       agentId: resolvedAgentId,
       task: request.task,
       result,
-      onEvent: emitStream,
-      fileChangeGuard: {
-        role: "memory_compaction",
-        allowedWriteRoots: [],
-        forbiddenWriteRoots: [controlPlaneRoot, taskWorkspace]
-      }
+      onEvent: emitStream
     });
 
     const localSummary = distilled.localSummary || summarizeResultForMemory(result);
@@ -627,12 +732,7 @@ export async function runTask(
         status: entry.status,
         outputSummary: entry.outputSummary
       })),
-      onEvent: emitStream,
-      fileChangeGuard: {
-        role: "memory_temp_promote",
-        allowedWriteRoots: [],
-        forbiddenWriteRoots: [controlPlaneRoot, taskWorkspace]
-      }
+      onEvent: emitStream
     });
 
     await appendPersonalVectorMemories({

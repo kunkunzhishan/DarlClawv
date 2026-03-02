@@ -8,7 +8,7 @@ import { shouldRunCompaction } from "../src/core/memory/compaction.js";
 import type { AppConfig } from "../src/types/contracts.js";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "mydarl-memory-test-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "darlclawv-memory-test-"));
   await fn(dir);
 }
 
@@ -44,6 +44,9 @@ function baseConfig(root: string): AppConfig {
       capability_timeout_ms: 600000,
       enable_skill_manager: true,
       allow_promote_to_config_skills: true
+    },
+    security: {
+      default_admin_cap: "workspace"
     }
   };
 }
