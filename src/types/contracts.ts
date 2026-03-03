@@ -264,7 +264,6 @@ export type WorkflowState = {
 export type RuntimeLibraryPaths = {
   root: string;
   scriptsDir: string;
-  skillsDir: string;
   mcpDir: string;
   testsDir: string;
   logsDir: string;

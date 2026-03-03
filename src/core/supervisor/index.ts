@@ -34,7 +34,7 @@ import { loadAgentPack, type AgentPack } from "../../registry/agent-pack.js";
 import { loadAgentSpec } from "../../registry/agent-spec.js";
 import { loadAppConfig, loadPolicies, loadSkills } from "../../registry/index.js";
 import { loadSkillIndex } from "../../registry/skill-index.js";
-import { ensureRuntimeLibrary, loadRuntimeSkills } from "../../runtime/library/index.js";
+import { ensureRuntimeLibrary } from "../../runtime/library/index.js";
 import { appendEvent, createRun, finalizeRun, writeSnapshot } from "../../storage/index.js";
 import type { AgentSpec, EngineRunResult, PermissionProfile, Policy, RunEvent, RunMode, RunRequest } from "../../types/contracts.js";
 import { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
@@ -134,11 +134,12 @@ export async function runTask(
   hooks?: RunTaskHooks
 ): Promise<{ runId: string; result: EngineRunResult }> {
   const appConfig = await loadAppConfig();
-  const [configSkills, policies, skillIndexDoc] = await Promise.all([
+  const [initialConfigSkills, policies, skillIndexDoc] = await Promise.all([
     loadSkills(),
     loadPolicies(),
     loadSkillIndex()
   ]);
+  let configSkills = initialConfigSkills;
   const recommendedSources = skillIndexDoc.data.recommended_sources || [];
 
   const resolvedAgentId = request.agentId || appConfig.agent.default_id || appConfig.default_agent || "default";
@@ -247,19 +248,6 @@ export async function runTask(
 
   const runtimePaths = await ensureRuntimeLibrary();
   const runtimeRoot = path.resolve(runtimePaths.root);
-  let runtimeSkills = await loadRuntimeSkills(runtimePaths);
-  const mergedSkillLibrary = (): typeof runtimeSkills => {
-    const byId = new Map<string, (typeof runtimeSkills)[number]>();
-    for (const skill of runtimeSkills) {
-      byId.set(skill.id, skill);
-    }
-    for (const skill of configSkills.values()) {
-      if (!byId.has(skill.id)) {
-        byId.set(skill.id, skill);
-      }
-    }
-    return [...byId.values()];
-  };
   const mainAdditionalDirectories = [configSkillsRoot, runtimeRoot].filter((dir, idx, all) => all.indexOf(dir) === idx && existsSync(dir));
   let mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
     workingDirectory: taskWorkspace,
@@ -330,7 +318,7 @@ export async function runTask(
   let forceRepairSelection = false;
 
   for (let cycle = 1; cycle <= maxMainCycles; cycle += 1) {
-    const allSkills = mergedSkillLibrary();
+    const allSkills = [...configSkills.values()];
     const installIntent = isInstallIntentTask(nextMainTask);
     const candidateSkillsBase = executionSpec.skillWhitelist.length > 0
       ? allSkills.filter((skill) => executionSpec.skillWhitelist.includes(skill.id))
@@ -375,7 +363,7 @@ export async function runTask(
       skillLibrary: allSkills,
       selectedSkillIds: selectedSkills.selectedSkillIds,
       runtimePathsHint: [
-        `runtime_root: ${runtimeRoot}`,
+        `config_skills_root: ${configSkillsRoot}`,
         `mcp_runtime_root: ${runtimePaths.mcpDir}`,
         effectiveCodexHome ? `codex_home: ${effectiveCodexHome}` : undefined,
         "For MCP/tool virtualenvs and runtime artifacts, write under mcp_runtime_root instead of project-root .venv-* paths."
@@ -545,7 +533,7 @@ export async function runTask(
       });
 
       if (capabilityResult.status === "ready") {
-        runtimeSkills = await loadRuntimeSkills(runtimePaths);
+        configSkills = await loadSkills();
         await setWorkflowPhase(ctx, "running-main");
         await emit({
           type: "workflow.phase.changed",

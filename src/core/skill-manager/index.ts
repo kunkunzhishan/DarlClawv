@@ -1,8 +1,8 @@
 import path from "node:path";
+import { cp, stat } from "node:fs/promises";
 import { compileAgentPackPrompt } from "../prompt-compiler/index.js";
 import { classifyRepairPriorityLayer, sortSkillsByTrustAndPopularity, validateSkillSourceRef } from "../repair/index.js";
 import { incrementCapabilityAttempt, isWorkflowExpired } from "../workflow/session.js";
-import { upsertPendingPromotion } from "../workflow/state-store.js";
 import type { AgentPack } from "../../registry/agent-pack.js";
 import type { RunContext } from "../../storage/index.js";
 import type {
@@ -23,7 +23,7 @@ import {
   upsertRuntimeCapability
 } from "../../runtime/library/index.js";
 import type { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
-import { fileExists } from "../../utils/fs.js";
+import { ensureDir, fileExists } from "../../utils/fs.js";
 import { parseCapabilityFailed, parseCapabilityReady, serializeCapabilityFeedback } from "./protocol.js";
 import { renderPromptTemplate } from "../../registry/prompt-templates.js";
 
@@ -70,6 +70,75 @@ export async function resolveEntrypointPathInRoot(entrypoint: string, rootPath: 
   return null;
 }
 
+async function resolveEntrypointPathInRoots(entrypoint: string, rootPaths: string[]): Promise<string | null> {
+  for (const rootPath of rootPaths) {
+    const resolved = await resolveEntrypointPathInRoot(entrypoint, rootPath);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return null;
+}
+
+async function isDirectory(candidatePath: string): Promise<boolean> {
+  try {
+    return (await stat(candidatePath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function resolveConfigSkillPath(args: { controlPlaneRoot?: string; capabilityId: string }): string {
+  const controlPlaneRoot = path.resolve(args.controlPlaneRoot || process.cwd());
+  return path.resolve(controlPlaneRoot, "config", "skills", args.capabilityId);
+}
+
+async function materializeSkillToConfig(args: {
+  capabilityId: string;
+  requestedSkillPath: string;
+  runtimeRoot: string;
+  controlPlaneRoot?: string;
+}): Promise<{ ok: true; skillPath: string } | { ok: false; reason: string }> {
+  const targetSkillPath = resolveConfigSkillPath({
+    controlPlaneRoot: args.controlPlaneRoot,
+    capabilityId: args.capabilityId
+  });
+  const configSkillsRoot = path.dirname(targetSkillPath);
+  const requestedAbs = path.resolve(args.requestedSkillPath);
+  const inConfigSkills = resolvePathInRoot(requestedAbs, configSkillsRoot);
+  const inRuntimeRoot = resolvePathInRoot(requestedAbs, args.runtimeRoot);
+
+  if (!inConfigSkills && !inRuntimeRoot) {
+    return {
+      ok: false,
+      reason: `skill_path must be under config/skills or runtime staging root: ${args.requestedSkillPath}`
+    };
+  }
+
+  const sourceSkillPath = inConfigSkills || inRuntimeRoot;
+  if (!sourceSkillPath || !(await fileExists(sourceSkillPath)) || !(await isDirectory(sourceSkillPath))) {
+    return {
+      ok: false,
+      reason: `skill_path does not exist or is not a directory: ${sourceSkillPath || args.requestedSkillPath}`
+    };
+  }
+
+  if (path.resolve(sourceSkillPath) !== path.resolve(targetSkillPath)) {
+    await ensureDir(path.dirname(targetSkillPath));
+    await cp(sourceSkillPath, targetSkillPath, { recursive: true, force: true });
+  }
+
+  const skillDocPath = path.join(targetSkillPath, "SKILL.md");
+  if (!(await fileExists(skillDocPath))) {
+    return {
+      ok: false,
+      reason: `config skill is missing SKILL.md after install: ${targetSkillPath}`
+    };
+  }
+
+  return { ok: true, skillPath: targetSkillPath };
+}
+
 function requiresExternalReceipt(request: CapabilityRequest): boolean {
   const text = `${request.goal}\n${request.io_contract}\n${request.acceptance_tests.join("\n")}`.toLowerCase();
   return /(wechat|message|sms|email|notification|webhook|payment|transfer|send)/.test(text);
@@ -79,6 +148,7 @@ function buildSkillManagerTask(args: {
   request: CapabilityRequest;
   attempt: number;
   runtimeRoot: string;
+  configSkillsRoot: string;
   codexHome?: string;
   recommendedSources: SkillRecommendedSource[];
   feedback?: CapabilityFeedback;
@@ -92,6 +162,7 @@ function buildSkillManagerTask(args: {
   return renderPromptTemplate("skill-manager/task", {
     attempt: String(args.attempt),
     runtime_root: args.runtimeRoot,
+    config_skills_root: args.configSkillsRoot,
     codex_home: args.codexHome || "unset",
     recommended_sources_json: JSON.stringify(args.recommendedSources, null, 2),
     request_json: JSON.stringify(args.request, null, 2),
@@ -114,8 +185,20 @@ export async function resolveCapability(args: {
   onEvent?: (event: RunEvent) => void;
 }): Promise<CapabilityResult> {
   const runtimePaths = args.runtimePaths ?? (await ensureRuntimeLibrary());
-  const existing = await findRuntimeCapability(runtimePaths, args.request.capability_id);
-  if (existing && existing.status === "active") {
+  const controlPlaneRoot = path.resolve(args.controlPlaneRoot || process.cwd());
+  const configSkillPath = resolveConfigSkillPath({
+    controlPlaneRoot,
+    capabilityId: args.request.capability_id
+  });
+
+  if (await fileExists(path.join(configSkillPath, "SKILL.md"))) {
+    await upsertRuntimeCapability(runtimePaths, {
+      id: args.request.capability_id,
+      path: configSkillPath,
+      kind: "skill",
+      status: "active",
+      lastUsedAt: nowIso()
+    });
     args.onEvent?.({
       type: "repair.completed",
       workflowId: args.workflow.workflowId,
@@ -128,10 +211,52 @@ export async function resolveCapability(args: {
       status: "ready",
       capability_id: args.request.capability_id,
       entrypoint: `use:${args.request.capability_id}`,
-      skill_path: existing.path,
+      skill_path: configSkillPath,
       tests_passed: true,
       attempts: args.workflow.attemptsByCapability[args.request.capability_id] ?? 0,
-      report: "Capability already active in runtime index"
+      report: "Capability already active in config skills"
+    };
+  }
+
+  const existing = await findRuntimeCapability(runtimePaths, args.request.capability_id);
+  if (existing && existing.status === "active") {
+    const materialized = await materializeSkillToConfig({
+      capabilityId: args.request.capability_id,
+      requestedSkillPath: existing.path,
+      runtimeRoot: runtimePaths.root,
+      controlPlaneRoot
+    });
+    if (!materialized.ok) {
+      return {
+        status: "failed",
+        capability_id: args.request.capability_id,
+        attempts: args.workflow.attemptsByCapability[args.request.capability_id] ?? 0,
+        error: materialized.reason
+      };
+    }
+    await upsertRuntimeCapability(runtimePaths, {
+      id: args.request.capability_id,
+      path: materialized.skillPath,
+      kind: "skill",
+      status: "active",
+      lastUsedAt: nowIso()
+    });
+    args.onEvent?.({
+      type: "repair.completed",
+      workflowId: args.workflow.workflowId,
+      capabilityId: args.request.capability_id,
+      status: "ready",
+      attempts: args.workflow.attemptsByCapability[args.request.capability_id] ?? 0,
+      ts: nowIso()
+    });
+    return {
+      status: "ready",
+      capability_id: args.request.capability_id,
+      entrypoint: `use:${args.request.capability_id}`,
+      skill_path: materialized.skillPath,
+      tests_passed: true,
+      attempts: args.workflow.attemptsByCapability[args.request.capability_id] ?? 0,
+      report: "Capability already active"
     };
   }
 
@@ -192,6 +317,7 @@ export async function resolveCapability(args: {
         request: args.request,
         attempt,
         runtimeRoot: runtimePaths.root,
+        configSkillsRoot: path.resolve(controlPlaneRoot, "config", "skills"),
         codexHome: args.appConfig.engine.codex_home
           ? path.resolve(args.appConfig.engine.codex_home)
           : (process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : undefined),
@@ -259,30 +385,37 @@ export async function resolveCapability(args: {
         continue;
       }
 
-      const safeSkillPath = resolvePathInRoot(ready.skill_path, runtimePaths.root);
-      if (!safeSkillPath) {
+      const materialized = await materializeSkillToConfig({
+        capabilityId: ready.capability_id,
+        requestedSkillPath: ready.skill_path,
+        runtimeRoot: runtimePaths.root,
+        controlPlaneRoot
+      });
+      if (!materialized.ok) {
         feedback = {
           type: "CAPABILITY_FEEDBACK",
           capability_id: args.request.capability_id,
           ok: false,
-          error: `skill_path is outside runtime staging root: ${ready.skill_path}`
+          error: materialized.reason
         };
+        args.onEvent?.({
+          type: "capability.validation.failed",
+          workflowId: currentState.workflowId,
+          capabilityId: args.request.capability_id,
+          reason: materialized.reason,
+          ts: nowIso()
+        });
         continue;
       }
-
-      if (!(await fileExists(safeSkillPath))) {
-        feedback = {
-          type: "CAPABILITY_FEEDBACK",
-          capability_id: args.request.capability_id,
-          ok: false,
-          error: `skill_path does not exist: ${safeSkillPath}`
-        };
-        continue;
-      }
-
-      const resolvedEntrypointPath = await resolveEntrypointPathInRoot(ready.entrypoint, runtimePaths.root);
+      const configSkillsRoot = path.resolve(controlPlaneRoot, "config", "skills");
+      const resolvedEntrypointPath = await resolveEntrypointPathInRoots(ready.entrypoint, [
+        materialized.skillPath,
+        controlPlaneRoot,
+        configSkillsRoot,
+        runtimePaths.root
+      ]);
       if (!resolvedEntrypointPath) {
-        const reason = `entrypoint does not reference an existing staged executable/script: ${ready.entrypoint}`;
+        const reason = `entrypoint does not reference an existing executable/script under config or runtime roots: ${ready.entrypoint}`;
         feedback = {
           type: "CAPABILITY_FEEDBACK",
           capability_id: args.request.capability_id,
@@ -378,7 +511,7 @@ export async function resolveCapability(args: {
 
       await upsertRuntimeCapability(runtimePaths, {
         id: ready.capability_id,
-        path: safeSkillPath,
+        path: materialized.skillPath,
         kind: "skill",
         status: "active",
         lastUsedAt: nowIso()
@@ -389,29 +522,10 @@ export async function resolveCapability(args: {
         workflowId: currentState.workflowId,
         capabilityId: ready.capability_id,
         entrypoint: ready.entrypoint,
-        skillPath: safeSkillPath,
+        skillPath: materialized.skillPath,
         evidence: ready.evidence,
         ts: nowIso()
       });
-
-      const shouldPendPromotion =
-        args.appConfig.workflow.allow_promote_to_config_skills && args.request.promote_to_config_skills === true;
-
-      if (shouldPendPromotion) {
-        await upsertPendingPromotion(args.ctx, {
-          capabilityId: ready.capability_id,
-          sourcePath: safeSkillPath,
-          requestedAt: nowIso(),
-          workflowId: currentState.workflowId
-        });
-        args.onEvent?.({
-          type: "capability.promotion.pending",
-          workflowId: currentState.workflowId,
-          capabilityId: ready.capability_id,
-          sourcePath: safeSkillPath,
-          ts: nowIso()
-        });
-      }
 
       args.onEvent?.({
         type: "repair.completed",
@@ -426,7 +540,7 @@ export async function resolveCapability(args: {
         status: "ready",
         capability_id: ready.capability_id,
         entrypoint: ready.entrypoint,
-        skill_path: safeSkillPath,
+        skill_path: materialized.skillPath,
         tests_passed: ready.tests_passed,
         evidence: ready.evidence,
         attempts: attempt,

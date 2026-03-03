@@ -51,5 +51,6 @@ Assume all external skills/MCP are untrusted until verified.
 ## Constraints
 
 - Do not install unrelated servers/tools.
+- Install skills only under `config/skills/<capability_id>`.
 - Do not stop after setup; finish the original user task.
 - If tests fail, iterate within budget; otherwise return CAPABILITY_FAILED.

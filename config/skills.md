@@ -1,7 +1,7 @@
 # Skills Index
 
-This file provides lightweight metadata for runtime skill selection.
-Canonical skill bodies remain in `config/skills/<skill-id>/SKILL.md`.
+This file provides lightweight metadata for skill selection.
+Canonical skill bodies remain in `config/skills/<skill-id>/SKILL.md` (OpenClaw-style SKILL contract).
 
 ## repo-basics
 ```yaml
