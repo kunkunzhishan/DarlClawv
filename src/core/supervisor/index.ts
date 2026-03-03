@@ -38,6 +38,7 @@ import { ensureRuntimeLibrary, loadRuntimeSkills } from "../../runtime/library/i
 import { appendEvent, createRun, finalizeRun, writeSnapshot } from "../../storage/index.js";
 import type { AgentSpec, EngineRunResult, PermissionProfile, Policy, RunEvent, RunMode, RunRequest } from "../../types/contracts.js";
 import { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
+import { renderPromptSection } from "../../registry/prompt-templates.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -100,9 +101,10 @@ async function askUserEscalation(args: {
 }): Promise<boolean> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const answer = await rl.question(
-      `Permission escalation required: profile=${args.requestedProfile}. Reason: ${args.reason}. Approve? [y/N] `
-    );
+    const answer = await rl.question(renderPromptSection("supervisor/messages", "permission-escalation-question", {
+      requested_profile: args.requestedProfile,
+      reason: args.reason
+    }));
     const normalized = answer.trim().toLowerCase();
     return normalized === "y" || normalized === "yes";
   } finally {
@@ -116,7 +118,7 @@ function repairPackFromAgentSpec(spec: AgentSpec): AgentPack {
     persona: spec.persona,
     workflow: spec.workflow,
     style: spec.style,
-    ioContract: "Return strict capability protocol JSON only.",
+    ioContract: renderPromptSection("supervisor/messages", "repair-pack-io-contract", {}),
     skills: spec.capabilityPolicy,
     skillWhitelist: spec.skillWhitelist,
     path: spec.path
@@ -171,6 +173,9 @@ export async function runTask(
   const controlPlaneRoot = path.resolve(
     request.controlPlaneRoot || process.env.MYDARL_CONTROL_PLANE_ROOT || inferControlPlaneRoot()
   );
+  const effectiveCodexHome = appConfig.engine.codex_home
+    ? path.resolve(appConfig.engine.codex_home)
+    : (process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : undefined);
   const configSkillsRoot = path.resolve(controlPlaneRoot, "config", "skills");
   const workspaceInsideControlPlane = isPathInsideRoot(taskWorkspace, controlPlaneRoot);
   const allowControlPlaneSkillWrites = workspaceInsideControlPlane;
@@ -227,7 +232,8 @@ export async function runTask(
       allowControlPlaneSkillWrites,
       runMode,
       adminCap,
-      initialWorkerProfile: currentProfile
+      initialWorkerProfile: currentProfile,
+      codexHome: effectiveCodexHome
     })
   ]);
 
@@ -371,8 +377,9 @@ export async function runTask(
       runtimePathsHint: [
         `runtime_root: ${runtimeRoot}`,
         `mcp_runtime_root: ${runtimePaths.mcpDir}`,
+        effectiveCodexHome ? `codex_home: ${effectiveCodexHome}` : undefined,
         "For MCP/tool virtualenvs and runtime artifacts, write under mcp_runtime_root instead of project-root .venv-* paths."
-      ].join("\n"),
+      ].filter((line): line is string => Boolean(line)).join("\n"),
       localMemorySummary,
       globalMemorySummary
     });
@@ -445,12 +452,12 @@ export async function runTask(
 
       if (adminDecision.decision === "grant") {
         rebuildMainWorker(adminDecision.profile);
-        nextMainTask = [
-          "Permission granted. Continue the original task immediately.",
-          `Original task: ${request.task}`,
-          `Granted profile: ${adminDecision.profile}`,
-          `Reason: ${adminDecision.reason}`
-        ].join("\n");
+        nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
+          headline: "Permission granted. Continue the original task immediately.",
+          original_task: request.task,
+          granted_profile: adminDecision.profile,
+          reason_line: `Reason: ${adminDecision.reason}`
+        });
         finalOutput = "";
         continue;
       }
@@ -487,11 +494,12 @@ export async function runTask(
       }
 
       rebuildMainWorker(adminDecision.profile);
-      nextMainTask = [
-        "Permission escalation approved by user. Continue the original task immediately.",
-        `Original task: ${request.task}`,
-        `Granted profile: ${adminDecision.profile}`
-      ].join("\n");
+      nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
+        headline: "Permission escalation approved by user. Continue the original task immediately.",
+        original_task: request.task,
+        granted_profile: adminDecision.profile,
+        reason_line: ""
+      });
       finalOutput = "";
       continue;
     }
@@ -546,18 +554,17 @@ export async function runTask(
           ts: nowIso()
         });
 
-        nextMainTask = [
-          "Continue the original task using the new capability immediately.",
-          `Original task: ${request.task}`,
-          `Resolved capability: ${JSON.stringify({
+        nextMainTask = renderPromptSection("supervisor/messages", "next-main-capability-ready", {
+          original_task: request.task,
+          capability_ready_json: JSON.stringify({
             type: "CAPABILITY_READY",
             capability_id: capabilityResult.capability_id,
             entrypoint: capabilityResult.entrypoint,
             skill_path: capabilityResult.skill_path,
             tests_passed: capabilityResult.tests_passed,
             evidence: capabilityResult.evidence
-          }, null, 2)}`
-        ].join("\n\n");
+          }, null, 2)
+        });
         finalOutput = "";
         continue;
       }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AgentSpec, RunEvent, Skill } from "../../types/contracts.js";
 import type { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
+import { renderPromptSection, renderPromptTemplate } from "../../registry/prompt-templates.js";
 
 export type SkillSelectionResult = {
   selectedSkillIds: string[];
@@ -220,17 +221,24 @@ function renderSkillForSelector(skill: Skill): string {
     ? skill.meta.trigger.keywords.join(", ")
     : "none";
 
-  return [
-    `- id: ${skill.id}`,
-    `  description: ${skill.meta.description}`,
-    `  summary: ${skill.meta.summary || "none"}`,
-    `  short: ${skill.meta.selector?.short || "none"}`,
-    `  aliases: ${aliases}`,
-    `  tags: ${tags}`,
-    `  keywords: ${keywords}`,
-    `  usage_hint: ${skill.meta.selector?.usage_hint || "none"}`,
-    `  entrypoint: ${skill.package?.entrypoint || "none"}`
-  ].join("\n");
+  return renderPromptTemplate("skill-selector/skill-catalog-entry", {
+    id: skill.id,
+    description: skill.meta.description,
+    summary: skill.meta.summary || "none",
+    short: skill.meta.selector?.short || "none",
+    aliases,
+    tags,
+    keywords,
+    usage_hint: skill.meta.selector?.usage_hint || "none",
+    entrypoint: skill.package?.entrypoint || "none"
+  });
+}
+
+function renderOptionalSelectorSection(sectionTemplateId: string, content?: string): string {
+  if (!content) {
+    return "";
+  }
+  return renderPromptSection("prompt-compiler/sections", sectionTemplateId, { content });
 }
 
 function buildSelectorPrompt(args: {
@@ -241,35 +249,16 @@ function buildSelectorPrompt(args: {
   globalMemorySummary?: string;
   maxSkills: number;
 }): string {
-  return [
-    "[SYSTEM]",
-    "You are a deterministic skill selector for a coding agent.",
-    "Do not execute tools or commands. Decide only from provided text.",
-    "",
-    "[DEVELOPER]",
-    "Return JSON only with this schema:",
-    "{\"selected_skill_ids\": [\"<skill-id>\"], \"reason\": \"optional\"}",
-    `Select at most ${args.maxSkills} skills from the catalog.`,
-    "Only include ids that exist in the catalog. Prefer the minimal relevant set.",
-    "Priority rule: certified/popular repair-capable skills > standard skills > untrusted skills.",
-    "If the task implies install/setup/configure intent, include one repair-capable skill when available.",
-    "",
-    "[AGENT_SPEC]",
-    `agent_id: ${args.spec.id}`,
-    `agent_summary: ${args.spec.summary || "none"}`,
-    `capability_policy: ${args.spec.capabilityPolicy}`,
-    "",
-    args.localMemorySummary ? `[LOCAL_MEMORY]\n${args.localMemorySummary}` : "",
-    args.globalMemorySummary ? `[GLOBAL_MEMORY]\n${args.globalMemorySummary}` : "",
-    "",
-    "[SKILL_CATALOG]",
-    args.skillLibrary.map((skill) => renderSkillForSelector(skill)).join("\n"),
-    "",
-    "[USER_TASK]",
-    args.task
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return renderPromptTemplate("skill-selector/full", {
+    max_skills: String(args.maxSkills),
+    agent_id: args.spec.id,
+    agent_summary: args.spec.summary || "none",
+    capability_policy: args.spec.capabilityPolicy,
+    local_memory_section: renderOptionalSelectorSection("local-memory", args.localMemorySummary),
+    global_memory_section: renderOptionalSelectorSection("global-memory", args.globalMemorySummary),
+    skill_catalog: args.skillLibrary.map((skill) => renderSkillForSelector(skill)).join("\n"),
+    task: args.task
+  });
 }
 
 export async function selectSkillsForTask(args: {

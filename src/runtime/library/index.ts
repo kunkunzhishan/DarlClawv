@@ -91,10 +91,32 @@ export async function upsertRuntimeCapability(
 }
 
 export async function listRuntimeSkillDirs(paths: RuntimeLibraryPaths): Promise<string[]> {
-  if (!(await fileExists(paths.skillsDir))) {
-    return [];
+  const roots = new Set<string>();
+  roots.add(paths.skillsDir);
+
+  // Backward-compatible root: .darlclawv-runtime/skills (outside staging).
+  if (path.basename(paths.root) === "staging") {
+    roots.add(path.join(path.dirname(paths.root), "skills"));
   }
-  return await listDirs(paths.skillsDir);
+
+  const all: string[] = [];
+  const seen = new Set<string>();
+  for (const root of roots) {
+    if (!(await fileExists(root))) {
+      continue;
+    }
+    const dirs = await listDirs(root);
+    for (const dir of dirs) {
+      const normalized = path.resolve(dir);
+      if (seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      all.push(normalized);
+    }
+  }
+
+  return all;
 }
 
 function parseFrontmatter(filePath: string, content: string): { frontmatter: Record<string, unknown>; body: string } {

@@ -1,9 +1,26 @@
 import path from "node:path";
-import { Codex, Thread, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
+import { Codex, Thread, type CodexOptions, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
 import type { AppConfig, RunEvent } from "../../types/contracts.js";
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function inheritProcessEnvWithCodexHome(codexHome?: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === "string") {
+      env[key] = value;
+    }
+  }
+  if (codexHome) {
+    env.CODEX_HOME = codexHome;
+  }
+  // Codex CLI auth uses CODEX_API_KEY; fall back to OPENAI_API_KEY for compatibility.
+  if (!env.CODEX_API_KEY && env.OPENAI_API_KEY) {
+    env.CODEX_API_KEY = env.OPENAI_API_KEY;
+  }
+  return env;
 }
 
 export type RunThreadArgs = {
@@ -31,7 +48,11 @@ export class CodexSdkRuntimeClient {
 
   constructor(engine: AppConfig["engine"], overrideOptions?: Partial<ThreadOptions>) {
     const workingDirectory = path.resolve(overrideOptions?.workingDirectory ?? process.cwd());
-    this.codex = new Codex();
+    const codexHome = engine.codex_home ? path.resolve(engine.codex_home) : undefined;
+    const codexOptions: CodexOptions | undefined = codexHome
+      ? { env: inheritProcessEnvWithCodexHome(codexHome) }
+      : undefined;
+    this.codex = new Codex(codexOptions);
     this.threadOptions = {
       model: engine.model,
       workingDirectory,

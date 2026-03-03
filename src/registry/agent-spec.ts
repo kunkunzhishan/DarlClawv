@@ -2,6 +2,7 @@ import path from "node:path";
 import type { AgentSpec } from "../types/contracts.js";
 import { fileExists, listDirs, readText } from "../utils/fs.js";
 import { parseYaml } from "../utils/yaml.js";
+import { loadPromptSection } from "./prompt-templates.js";
 
 const REQUIRED_SECTIONS = ["persona", "workflow", "style", "capability-policy"] as const;
 const GLOBAL_AGENT_FILENAME = "global.md";
@@ -130,14 +131,14 @@ export async function loadAgentSpec(id: string, configRoot = path.resolve("confi
   ]);
   const parsed = parseAgentMarkdown(raw, agentPath);
 
-  const persona = mergeSection(globalParsed, parsed, "persona", "You are a pragmatic coding agent.");
-  const workflow = mergeSection(globalParsed, parsed, "workflow", "Complete the user task end-to-end.");
-  const style = mergeSection(globalParsed, parsed, "style", "Use concise, direct technical communication.");
+  const persona = mergeSection(globalParsed, parsed, "persona", loadPromptSection("agent-spec/fallback", "persona"));
+  const workflow = mergeSection(globalParsed, parsed, "workflow", loadPromptSection("agent-spec/fallback", "workflow"));
+  const style = mergeSection(globalParsed, parsed, "style", loadPromptSection("agent-spec/fallback", "style"));
   const capabilityPolicy = mergeSection(
     globalParsed,
     parsed,
     "capability-policy",
-    "When blocked by missing capabilities, emit CAPABILITY_REQUEST JSON and wait for CAPABILITY_READY."
+    loadPromptSection("agent-spec/fallback", "capability-policy")
   );
 
   const localAllowlist = toStringArray(parsed.metadata.skill_allowlist).length > 0

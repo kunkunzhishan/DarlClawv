@@ -25,6 +25,7 @@ import {
 import type { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
 import { fileExists } from "../../utils/fs.js";
 import { parseCapabilityFailed, parseCapabilityReady, serializeCapabilityFeedback } from "./protocol.js";
+import { renderPromptTemplate } from "../../registry/prompt-templates.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -78,24 +79,24 @@ function buildSkillManagerTask(args: {
   request: CapabilityRequest;
   attempt: number;
   runtimeRoot: string;
+  codexHome?: string;
   recommendedSources: SkillRecommendedSource[];
   feedback?: CapabilityFeedback;
 }): string {
-  const lines = [
-    "Resolve capability request and return JSON only.",
-    `attempt: ${args.attempt}`,
-    `runtime_root: ${args.runtimeRoot}`,
-    `recommended_sources: ${JSON.stringify(args.recommendedSources, null, 2)}`,
-    "Use trusted-first priority: certified/popular > standard > script-fallback.",
-    "External skills/MCP are untrusted by default; include rejected sources in report when blocked.",
-    `request: ${JSON.stringify(args.request, null, 2)}`
-  ];
+  const feedbackSection = args.feedback
+    ? renderPromptTemplate("skill-manager/feedback-section", {
+        feedback_json: serializeCapabilityFeedback(args.feedback)
+      })
+    : "";
 
-  if (args.feedback) {
-    lines.push(`feedback: ${serializeCapabilityFeedback(args.feedback)}`);
-  }
-
-  return lines.join("\n\n");
+  return renderPromptTemplate("skill-manager/task", {
+    attempt: String(args.attempt),
+    runtime_root: args.runtimeRoot,
+    codex_home: args.codexHome || "unset",
+    recommended_sources_json: JSON.stringify(args.recommendedSources, null, 2),
+    request_json: JSON.stringify(args.request, null, 2),
+    feedback_section: feedbackSection
+  });
 }
 
 export async function resolveCapability(args: {
@@ -191,6 +192,9 @@ export async function resolveCapability(args: {
         request: args.request,
         attempt,
         runtimeRoot: runtimePaths.root,
+        codexHome: args.appConfig.engine.codex_home
+          ? path.resolve(args.appConfig.engine.codex_home)
+          : (process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : undefined),
         recommendedSources: args.recommendedSources || [],
         feedback
       }),

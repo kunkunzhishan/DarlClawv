@@ -208,7 +208,7 @@ export async function loadAppConfig(configRoot = path.resolve("config")): Promis
       model: process.env.OPENAI_MODEL || parsed.engine.model,
       cli_command: process.env.MYDARL_CODEX_COMMAND || parsed.engine.cli_command || "codex",
       cli_args: parsed.engine.cli_args ?? [],
-      codex_home: process.env.MYDARL_CODEX_HOME || parsed.engine.codex_home,
+      codex_home: process.env.MYDARL_CODEX_HOME || parsed.engine.codex_home || ".darlclawv-runtime",
       timeout_ms: parsed.engine.timeout_ms ?? 120000
     },
     memory: {
