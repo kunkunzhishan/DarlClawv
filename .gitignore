@@ -3,7 +3,7 @@ dist
 .DS_Store
 .env
 runs
-.mydarl-codex-home
+.darlclawv-runtime
 .mydarl-runtime
 .darlclawv-runtime
 logs

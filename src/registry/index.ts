@@ -208,7 +208,7 @@ export async function loadAppConfig(configRoot = path.resolve("config")): Promis
       model: process.env.OPENAI_MODEL || parsed.engine.model,
       cli_command: process.env.MYDARL_CODEX_COMMAND || parsed.engine.cli_command || "codex",
       cli_args: parsed.engine.cli_args ?? [],
-      codex_home: process.env.MYDARL_CODEX_HOME || parsed.engine.codex_home,
+      codex_home: process.env.MYDARL_CODEX_HOME || parsed.engine.codex_home || ".darlclawv-runtime",
       timeout_ms: parsed.engine.timeout_ms ?? 120000
     },
     memory: {
@@ -332,7 +332,25 @@ export async function loadPolicies(configRoot = path.resolve("config")): Promise
 
 export async function loadSkills(configRoot = path.resolve("config")): Promise<Map<string, Skill>> {
   const root = path.join(configRoot, "skills");
-  const dirs = (await fileExists(root)) ? await listDirs(root) : [];
+  const dirs = (await fileExists(root))
+    ? await (async (): Promise<string[]> => {
+        const levelOne = await listDirs(root);
+        const discovered: string[] = [];
+        for (const dir of levelOne) {
+          if (await fileExists(path.join(dir, "SKILL.md"))) {
+            discovered.push(dir);
+            continue;
+          }
+          const levelTwo = await listDirs(dir);
+          for (const child of levelTwo) {
+            if (await fileExists(path.join(child, "SKILL.md"))) {
+              discovered.push(child);
+            }
+          }
+        }
+        return discovered;
+      })()
+    : [];
   const [markdownLibrary, skillIndexDoc] = await Promise.all([
     loadSkillMarkdownLibrary(configRoot),
     loadSkillIndex(configRoot)

@@ -10,12 +10,11 @@ import { selectSkillsForTask } from "../skill-selector/index.js";
 import { resolveCapability } from "../skill-manager/index.js";
 import { parseCapabilityRequest } from "../skill-manager/protocol.js";
 import { decidePermissionByAdmin } from "../security/admin-approver.js";
-import { toRuntimePermission, minProfile } from "../security/permissions.js";
+import { toRuntimePermission, minProfile, profileRank } from "../security/permissions.js";
 import { parsePermissionRequest } from "../security/protocol.js";
 import {
   appendGlobalMemory,
   appendGroupVectorMemories,
-  appendLocalMemory,
   appendPersonalVectorMemories,
   appendTemporaryContext,
   compactVectorMemories,
@@ -34,10 +33,11 @@ import { loadAgentPack, type AgentPack } from "../../registry/agent-pack.js";
 import { loadAgentSpec } from "../../registry/agent-spec.js";
 import { loadAppConfig, loadPolicies, loadSkills } from "../../registry/index.js";
 import { loadSkillIndex } from "../../registry/skill-index.js";
-import { ensureRuntimeLibrary, loadRuntimeSkills } from "../../runtime/library/index.js";
+import { ensureRuntimeLibrary } from "../../runtime/library/index.js";
 import { appendEvent, createRun, finalizeRun, writeSnapshot } from "../../storage/index.js";
 import type { AgentSpec, EngineRunResult, PermissionProfile, Policy, RunEvent, RunMode, RunRequest } from "../../types/contracts.js";
 import { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
+import { renderPromptSection } from "../../registry/prompt-templates.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -100,9 +100,10 @@ async function askUserEscalation(args: {
 }): Promise<boolean> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const answer = await rl.question(
-      `Permission escalation required: profile=${args.requestedProfile}. Reason: ${args.reason}. Approve? [y/N] `
-    );
+    const answer = await rl.question(renderPromptSection("supervisor/messages", "permission-escalation-question", {
+      requested_profile: args.requestedProfile,
+      reason: args.reason
+    }));
     const normalized = answer.trim().toLowerCase();
     return normalized === "y" || normalized === "yes";
   } finally {
@@ -116,7 +117,7 @@ function repairPackFromAgentSpec(spec: AgentSpec): AgentPack {
     persona: spec.persona,
     workflow: spec.workflow,
     style: spec.style,
-    ioContract: "Return strict capability protocol JSON only.",
+    ioContract: renderPromptSection("supervisor/messages", "repair-pack-io-contract", {}),
     skills: spec.capabilityPolicy,
     skillWhitelist: spec.skillWhitelist,
     path: spec.path
@@ -132,11 +133,12 @@ export async function runTask(
   hooks?: RunTaskHooks
 ): Promise<{ runId: string; result: EngineRunResult }> {
   const appConfig = await loadAppConfig();
-  const [configSkills, policies, skillIndexDoc] = await Promise.all([
+  const [initialConfigSkills, policies, skillIndexDoc] = await Promise.all([
     loadSkills(),
     loadPolicies(),
     loadSkillIndex()
   ]);
+  let configSkills = initialConfigSkills;
   const recommendedSources = skillIndexDoc.data.recommended_sources || [];
 
   const resolvedAgentId = request.agentId || appConfig.agent.default_id || appConfig.default_agent || "default";
@@ -171,6 +173,9 @@ export async function runTask(
   const controlPlaneRoot = path.resolve(
     request.controlPlaneRoot || process.env.MYDARL_CONTROL_PLANE_ROOT || inferControlPlaneRoot()
   );
+  const effectiveCodexHome = appConfig.engine.codex_home
+    ? path.resolve(appConfig.engine.codex_home)
+    : (process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : undefined);
   const configSkillsRoot = path.resolve(controlPlaneRoot, "config", "skills");
   const workspaceInsideControlPlane = isPathInsideRoot(taskWorkspace, controlPlaneRoot);
   const allowControlPlaneSkillWrites = workspaceInsideControlPlane;
@@ -227,7 +232,8 @@ export async function runTask(
       allowControlPlaneSkillWrites,
       runMode,
       adminCap,
-      initialWorkerProfile: currentProfile
+      initialWorkerProfile: currentProfile,
+      codexHome: effectiveCodexHome
     })
   ]);
 
@@ -241,19 +247,6 @@ export async function runTask(
 
   const runtimePaths = await ensureRuntimeLibrary();
   const runtimeRoot = path.resolve(runtimePaths.root);
-  let runtimeSkills = await loadRuntimeSkills(runtimePaths);
-  const mergedSkillLibrary = (): typeof runtimeSkills => {
-    const byId = new Map<string, (typeof runtimeSkills)[number]>();
-    for (const skill of runtimeSkills) {
-      byId.set(skill.id, skill);
-    }
-    for (const skill of configSkills.values()) {
-      if (!byId.has(skill.id)) {
-        byId.set(skill.id, skill);
-      }
-    }
-    return [...byId.values()];
-  };
   const mainAdditionalDirectories = [configSkillsRoot, runtimeRoot].filter((dir, idx, all) => all.indexOf(dir) === idx && existsSync(dir));
   let mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
     workingDirectory: taskWorkspace,
@@ -320,11 +313,12 @@ export async function runTask(
   let failureKind: EngineRunResult["failureKind"] | undefined;
   let error: string | undefined;
 
-  const maxMainCycles = Math.max(2, appConfig.workflow.max_capability_attempts + 1);
+  // Permission/capability handshakes may consume multiple turns before actual execution.
+  const maxMainCycles = Math.max(4, appConfig.workflow.max_capability_attempts + 2);
   let forceRepairSelection = false;
 
   for (let cycle = 1; cycle <= maxMainCycles; cycle += 1) {
-    const allSkills = mergedSkillLibrary();
+    const allSkills = [...configSkills.values()];
     const installIntent = isInstallIntentTask(nextMainTask);
     const candidateSkillsBase = executionSpec.skillWhitelist.length > 0
       ? allSkills.filter((skill) => executionSpec.skillWhitelist.includes(skill.id))
@@ -369,10 +363,11 @@ export async function runTask(
       skillLibrary: allSkills,
       selectedSkillIds: selectedSkills.selectedSkillIds,
       runtimePathsHint: [
-        `runtime_root: ${runtimeRoot}`,
+        `config_skills_root: ${configSkillsRoot}`,
         `mcp_runtime_root: ${runtimePaths.mcpDir}`,
+        effectiveCodexHome ? `codex_home: ${effectiveCodexHome}` : undefined,
         "For MCP/tool virtualenvs and runtime artifacts, write under mcp_runtime_root instead of project-root .venv-* paths."
-      ].join("\n"),
+      ].filter((line): line is string => Boolean(line)).join("\n"),
       localMemorySummary,
       globalMemorySummary
     });
@@ -418,6 +413,26 @@ export async function runTask(
         ts: nowIso()
       });
 
+      if (profileRank(permissionRequest.requested_profile) <= profileRank(currentProfile)) {
+        await emit({
+          type: "permission.admin.decided",
+          runId: ctx.runId,
+          decision: "grant",
+          requestedProfile: permissionRequest.requested_profile,
+          grantedProfile: currentProfile,
+          reason: `profile ${currentProfile} already active`,
+          ts: nowIso()
+        });
+        nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
+          headline: "Permission is already granted at this profile. Execute the original task now and do not request the same profile again.",
+          original_task: request.task,
+          granted_profile: currentProfile,
+          reason_line: ""
+        });
+        finalOutput = "";
+        continue;
+      }
+
       const adminDecision = runMode === "managed"
         ? await decidePermissionByAdmin({
             sdkClient: adminSdkClient,
@@ -444,13 +459,15 @@ export async function runTask(
       });
 
       if (adminDecision.decision === "grant") {
-        rebuildMainWorker(adminDecision.profile);
-        nextMainTask = [
-          "Permission granted. Continue the original task immediately.",
-          `Original task: ${request.task}`,
-          `Granted profile: ${adminDecision.profile}`,
-          `Reason: ${adminDecision.reason}`
-        ].join("\n");
+        if (adminDecision.profile !== currentProfile) {
+          rebuildMainWorker(adminDecision.profile);
+        }
+        nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
+          headline: "Permission granted. Continue the original task immediately.",
+          original_task: request.task,
+          granted_profile: adminDecision.profile,
+          reason_line: `Reason: ${adminDecision.reason}`
+        });
         finalOutput = "";
         continue;
       }
@@ -487,11 +504,12 @@ export async function runTask(
       }
 
       rebuildMainWorker(adminDecision.profile);
-      nextMainTask = [
-        "Permission escalation approved by user. Continue the original task immediately.",
-        `Original task: ${request.task}`,
-        `Granted profile: ${adminDecision.profile}`
-      ].join("\n");
+      nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
+        headline: "Permission escalation approved by user. Continue the original task immediately.",
+        original_task: request.task,
+        granted_profile: adminDecision.profile,
+        reason_line: ""
+      });
       finalOutput = "";
       continue;
     }
@@ -537,7 +555,7 @@ export async function runTask(
       });
 
       if (capabilityResult.status === "ready") {
-        runtimeSkills = await loadRuntimeSkills(runtimePaths);
+        configSkills = await loadSkills();
         await setWorkflowPhase(ctx, "running-main");
         await emit({
           type: "workflow.phase.changed",
@@ -546,18 +564,17 @@ export async function runTask(
           ts: nowIso()
         });
 
-        nextMainTask = [
-          "Continue the original task using the new capability immediately.",
-          `Original task: ${request.task}`,
-          `Resolved capability: ${JSON.stringify({
+        nextMainTask = renderPromptSection("supervisor/messages", "next-main-capability-ready", {
+          original_task: request.task,
+          capability_ready_json: JSON.stringify({
             type: "CAPABILITY_READY",
             capability_id: capabilityResult.capability_id,
             entrypoint: capabilityResult.entrypoint,
             skill_path: capabilityResult.skill_path,
             tests_passed: capabilityResult.tests_passed,
             evidence: capabilityResult.evidence
-          }, null, 2)}`
-        ].join("\n\n");
+          }, null, 2)
+        });
         finalOutput = "";
         continue;
       }
@@ -646,14 +663,6 @@ export async function runTask(
     });
 
     const localSummary = distilled.localSummary || summarizeResultForMemory(result);
-    await appendLocalMemory(memoryPaths, {
-      ts: baseMemoryEntry.ts,
-      runId: ctx.runId,
-      agentId: resolvedAgentId,
-      task: request.task,
-      status: result.status,
-      outputSummary: localSummary
-    });
 
     const appended = await appendGlobalMemory(
       memoryPaths,
@@ -707,8 +716,6 @@ export async function runTask(
       compacted: true,
       ts: nowIso()
     });
-  } else {
-    await appendLocalMemory(memoryPaths, baseMemoryEntry);
   }
 
   const temporaryCount = await countTemporaryContext(memoryPaths);

@@ -1,76 +1,97 @@
 import type { AgentProfile, AgentSpec, CompiledPrompt, Policy, Skill } from "../../types/contracts.js";
 import type { AgentPack } from "../../registry/agent-pack.js";
+import { renderPromptSection, renderPromptTemplate } from "../../registry/prompt-templates.js";
 
 function renderAgentSection(agent: AgentProfile): string {
-  const constraints = agent.constraints.length > 0 ? `constraints: ${agent.constraints.join(" | ")}` : "constraints: none";
-  const defaults = agent.default_skills.length > 0 ? `default_skills: ${agent.default_skills.join(", ")}` : "default_skills: none";
-  return [
-    `### agent:${agent.id}`,
-    agent.summary ? `summary: ${agent.summary}` : undefined,
-    agent.style ? `style: ${agent.style}` : undefined,
-    defaults,
+  const defaults = agent.default_skills.length > 0 ? agent.default_skills.join(", ") : "none";
+  const constraints = agent.constraints.length > 0 ? agent.constraints.join(" | ") : "none";
+  return renderPromptTemplate("prompt-compiler/agent-section", {
+    id: agent.id,
+    summary_line: agent.summary ? `summary: ${agent.summary}` : "",
+    style_line: agent.style ? `style: ${agent.style}` : "",
+    default_skills: defaults,
     constraints,
-    "prompt:",
-    agent.system_prompt.trim()
-  ]
-    .filter(Boolean)
-    .join("\n");
+    system_prompt: agent.system_prompt.trim()
+  });
 }
 
 function renderSkillSection(skill: Skill): string {
   const packageRoot = skill.package?.root ?? skill.path;
   const entrypoint = skill.package?.entrypoint;
-  const callHint = entrypoint ? `To call: execute \`${entrypoint}\`` : undefined;
 
-  return [
-    `### skill:${skill.id}`,
-    `description: ${skill.meta.description}`,
-    skill.meta.summary ? `notes: ${skill.meta.summary}` : undefined,
-    skill.meta.selector?.short ? `selector.short: ${skill.meta.selector.short}` : undefined,
-    skill.meta.selector?.usage_hint ? `selector.usage_hint: ${skill.meta.selector.usage_hint}` : undefined,
-    skill.meta.selector?.aliases && skill.meta.selector.aliases.length > 0
+  return renderPromptTemplate("prompt-compiler/skill-section", {
+    id: skill.id,
+    description: skill.meta.description,
+    notes_line: skill.meta.summary ? `notes: ${skill.meta.summary}` : "",
+    selector_short_line: skill.meta.selector?.short ? `selector.short: ${skill.meta.selector.short}` : "",
+    selector_usage_hint_line: skill.meta.selector?.usage_hint
+      ? `selector.usage_hint: ${skill.meta.selector.usage_hint}`
+      : "",
+    selector_aliases_line: skill.meta.selector?.aliases && skill.meta.selector.aliases.length > 0
       ? `selector.aliases: ${skill.meta.selector.aliases.join(", ")}`
-      : undefined,
-    skill.meta.selector?.tags && skill.meta.selector.tags.length > 0
+      : "",
+    selector_tags_line: skill.meta.selector?.tags && skill.meta.selector.tags.length > 0
       ? `selector.tags: ${skill.meta.selector.tags.join(", ")}`
-      : undefined,
-    `protocol: ${skill.meta.protocol}`,
-    `inject_mode: ${skill.meta.inject_mode}`,
-    `trust_tier: ${skill.meta.trust_tier || "standard"}`,
-    `repair_role: ${skill.meta.repair_role || "normal"}`,
-    skill.meta.source_ref ? `source_ref: ${skill.meta.source_ref}` : undefined,
-    skill.meta.popularity
+      : "",
+    protocol: skill.meta.protocol,
+    inject_mode: skill.meta.inject_mode,
+    trust_tier: skill.meta.trust_tier || "standard",
+    repair_role: skill.meta.repair_role || "normal",
+    source_ref_line: skill.meta.source_ref ? `source_ref: ${skill.meta.source_ref}` : "",
+    popularity_line: skill.meta.popularity
       ? `popularity: uses=${skill.meta.popularity.uses}, success_rate=${skill.meta.popularity.success_rate}`
-      : undefined,
-    skill.meta.trigger.keywords && skill.meta.trigger.keywords.length > 0
+      : "",
+    trigger_keywords_line: skill.meta.trigger.keywords && skill.meta.trigger.keywords.length > 0
       ? `trigger.keywords: ${skill.meta.trigger.keywords.join(", ")}`
-      : undefined,
-    skill.meta.trigger.file_globs && skill.meta.trigger.file_globs.length > 0
+      : "",
+    trigger_file_globs_line: skill.meta.trigger.file_globs && skill.meta.trigger.file_globs.length > 0
       ? `trigger.file_globs: ${skill.meta.trigger.file_globs.join(", ")}`
-      : undefined,
-    `path: ${skill.path}`,
-    `package_root: ${packageRoot}`,
-    skill.package?.manifestPath ? `manifest: ${skill.package.manifestPath}` : undefined,
-    entrypoint ? `entrypoint: ${entrypoint}` : undefined,
-    skill.package?.testCommand ? `test_command: ${skill.package.testCommand}` : undefined,
-    skill.package?.status ? `status: ${skill.package.status}` : undefined,
-    callHint
-  ]
-    .filter(Boolean)
-    .join("\n");
+      : "",
+    path: skill.path,
+    package_root: packageRoot,
+    manifest_line: skill.package?.manifestPath ? `manifest: ${skill.package.manifestPath}` : "",
+    entrypoint_line: entrypoint ? `entrypoint: ${entrypoint}` : "",
+    test_command_line: skill.package?.testCommand ? `test_command: ${skill.package.testCommand}` : "",
+    status_line: skill.package?.status ? `status: ${skill.package.status}` : "",
+    call_hint_line: entrypoint ? `To call: execute \`${entrypoint}\`` : ""
+  });
 }
 
 function renderPackSkillSection(skills: Skill[], whitelist: string[]): string {
   if (whitelist.length === 0) {
-    return "No skill whitelist configured for this agent pack.";
+    return renderPromptSection("prompt-compiler/messages", "pack-skill-whitelist-none", {});
   }
 
   const allowed = skills.filter((skill) => whitelist.includes(skill.id));
   if (allowed.length === 0) {
-    return `Skill whitelist configured but no matching runtime skills found: ${whitelist.join(", ")}`;
+    return renderPromptSection("prompt-compiler/messages", "pack-skill-whitelist-missing", {
+      whitelist: whitelist.join(", ")
+    });
   }
 
   return allowed.map(renderSkillSection).join("\n\n");
+}
+
+function renderCommonChatPrompt(system: string, developer: string, user: string): CompiledPrompt {
+  const fullText = renderPromptTemplate("common/chat-wrapper", {
+    system,
+    developer,
+    user
+  });
+  return {
+    system,
+    developer,
+    user,
+    fullText,
+    size: fullText.length
+  };
+}
+
+function renderOptionalSection(sectionName: string, content?: string): string {
+  if (!content) {
+    return "";
+  }
+  return renderPromptSection("prompt-compiler/sections", sectionName, { content });
 }
 
 export function compilePrompt(args: {
@@ -80,35 +101,17 @@ export function compilePrompt(args: {
   agentLibrary: AgentProfile[];
   skillLibrary: Skill[];
 }): CompiledPrompt {
-  const system = [
-    "You are running inside DarlClawv as the execution runtime.",
-    "Primary goal: complete the user's task end-to-end.",
-    "If blocked by missing tools/MCP, you may install/configure required MCP servers, verify them, then continue the same task.",
-    "Avoid irrelevant setup. Only perform recovery actions that unblock the current task.",
-    `Policy: sandbox=${args.policy.sandbox.mode}, approval=${args.policy.sandbox.approval_policy}, network=${String(args.policy.network.enabled)}`,
-    `Preferred agent profile: ${args.preferredAgent.id}`
-  ].join("\n");
-
-  const developer = [
-    "You must self-select the most suitable agent profile and skill set from the provided libraries.",
-    "Skill usage rule: prefer task-relevant skills; use repair skills only when failure signals indicate missing tools/MCP.",
-    "When MCP installation is needed: install -> verify with a minimal check -> continue original task.",
-    "[AGENT_LIBRARY]",
-    args.agentLibrary.map(renderAgentSection).join("\n\n"),
-    "[SKILL_LIBRARY]",
-    args.skillLibrary.map(renderSkillSection).join("\n\n")
-  ].join("\n\n");
-
-  const user = args.task;
-  const fullText = ["[SYSTEM]", system, "[DEVELOPER]", developer, "[USER]", user].join("\n\n");
-
-  return {
-    system,
-    developer,
-    user,
-    fullText,
-    size: fullText.length
-  };
+  const system = renderPromptTemplate("prompt-compiler/compile-runtime-system", {
+    sandbox_mode: args.policy.sandbox.mode,
+    approval_policy: args.policy.sandbox.approval_policy,
+    network_enabled: String(args.policy.network.enabled),
+    preferred_agent_id: args.preferredAgent.id
+  });
+  const developer = renderPromptTemplate("prompt-compiler/compile-runtime-developer", {
+    agent_library: args.agentLibrary.map(renderAgentSection).join("\n\n"),
+    skill_library: args.skillLibrary.map(renderSkillSection).join("\n\n")
+  });
+  return renderCommonChatPrompt(system, developer, args.task);
 }
 
 export function compileAgentPackPrompt(args: {
@@ -117,33 +120,22 @@ export function compileAgentPackPrompt(args: {
   pack: AgentPack;
   skillLibrary: Skill[];
 }): CompiledPrompt {
-  const system = [
-    args.pack.persona.trim(),
-    args.pack.workflow.trim(),
-    `Policy: sandbox=${args.policy.sandbox.mode}, approval=${args.policy.sandbox.approval_policy}, network=${String(args.policy.network.enabled)}`
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const system = renderPromptTemplate("prompt-compiler/compile-agent-system", {
+    persona: args.pack.persona.trim(),
+    workflow: args.pack.workflow.trim(),
+    sandbox_mode: args.policy.sandbox.mode,
+    approval_policy: args.policy.sandbox.approval_policy,
+    network_enabled: String(args.policy.network.enabled)
+  });
 
-  const developer = [
-    args.pack.style.trim(),
-    args.pack.ioContract.trim(),
-    args.pack.skills.trim(),
-    "[SKILL_LIBRARY]",
-    renderPackSkillSection(args.skillLibrary, args.pack.skillWhitelist)
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const developer = renderPromptTemplate("prompt-compiler/compile-agent-pack-developer", {
+    style: args.pack.style.trim(),
+    io_contract: args.pack.ioContract.trim(),
+    skills_policy: args.pack.skills.trim(),
+    skill_library: renderPackSkillSection(args.skillLibrary, args.pack.skillWhitelist)
+  });
 
-  const user = args.task;
-  const fullText = ["[SYSTEM]", system, "[DEVELOPER]", developer, "[USER]", user].join("\n\n");
-  return {
-    system,
-    developer,
-    user,
-    fullText,
-    size: fullText.length
-  };
+  return renderCommonChatPrompt(system, developer, args.task);
 }
 
 export function compileAgentSpecPrompt(args: {
@@ -163,48 +155,26 @@ export function compileAgentSpecPrompt(args: {
     ? allowlistedSkills.filter((skill) => args.selectedSkillIds?.includes(skill.id))
     : allowlistedSkills;
 
-  const system = [
-    args.spec.persona.trim(),
-    args.spec.workflow.trim(),
-    `Policy: sandbox=${args.policy.sandbox.mode}, approval=${args.policy.sandbox.approval_policy}, network=${String(args.policy.network.enabled)}`
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const system = renderPromptTemplate("prompt-compiler/compile-agent-system", {
+    persona: args.spec.persona.trim(),
+    workflow: args.spec.workflow.trim(),
+    sandbox_mode: args.policy.sandbox.mode,
+    approval_policy: args.policy.sandbox.approval_policy,
+    network_enabled: String(args.policy.network.enabled)
+  });
 
-  const developer = [
-    args.spec.style.trim(),
-    args.spec.capabilityPolicy.trim(),
-    "If permission is insufficient, emit PERMISSION_REQUEST JSON only: {\"type\":\"PERMISSION_REQUEST\",\"requested_profile\":\"safe|workspace|full\",\"reason\":\"what operation you need and where\"}.",
-    "Default assumption: local filesystem read operations are allowed across absolute paths (including outside workspace).",
-    "For read-only operations (ls/cat/find/grep/head/tail/stat), do not request permission preemptively; try first.",
-    "Request permission only after an explicit sandbox/approval denial, or when you need write/network/system-level actions.",
-    "Always request the minimum profile needed: safe for read/inspect, workspace for workspace edits, full only for truly system-level or unrestricted operations.",
-    "Never request full for a pure read-only file inspection task.",
-    "If admin grants a lower profile than requested, retry the operation with the granted profile before asking again.",
-    "Repair policy: for install/setup requests, prefer certified or popular repair-capable skills before others.",
-    "If tools/MCP fail or capability is missing, emit CAPABILITY_REQUEST JSON and expect repair flow to resolve it.",
-    "Treat external skills/MCP as untrusted until verified by tests and allowed source policy.",
-    "When a selected skill exposes an `entrypoint`, run that command directly to invoke the skill package.",
-    args.runtimePathsHint ? `[RUNTIME_PATHS]\n${args.runtimePathsHint}` : undefined,
-    args.localMemorySummary ? `[LOCAL_MEMORY]\n${args.localMemorySummary}` : undefined,
-    args.globalMemorySummary ? `[GLOBAL_MEMORY]\n${args.globalMemorySummary}` : undefined,
-    "[SKILL_LIBRARY]",
-    relevantSkills.length > 0
+  const developer = renderPromptTemplate("prompt-compiler/compile-agent-spec-developer", {
+    style: args.spec.style.trim(),
+    capability_policy: args.spec.capabilityPolicy.trim(),
+    runtime_paths_section: renderOptionalSection("runtime-paths", args.runtimePathsHint),
+    local_memory_section: renderOptionalSection("local-memory", args.localMemorySummary),
+    global_memory_section: renderOptionalSection("global-memory", args.globalMemorySummary),
+    skill_library: relevantSkills.length > 0
       ? relevantSkills.map(renderSkillSection).join("\n\n")
-      : "No skills available."
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+      : renderPromptSection("prompt-compiler/messages", "no-skills-available", {})
+  });
 
-  const user = args.task;
-  const fullText = ["[SYSTEM]", system, "[DEVELOPER]", developer, "[USER]", user].join("\n\n");
-  return {
-    system,
-    developer,
-    user,
-    fullText,
-    size: fullText.length
-  };
+  return renderCommonChatPrompt(system, developer, args.task);
 }
 
 export function pickPreferredAgent(

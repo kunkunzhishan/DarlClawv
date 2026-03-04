@@ -4,7 +4,6 @@ import { runTask } from "../core/supervisor/index.js";
 import {
   readRecentGlobalMemory,
   readRecentGroupVectorMemory,
-  readRecentLocalMemory,
   readRecentPersonalVectorMemory,
   readTemporaryContext,
   resolveMemoryPaths,
@@ -142,7 +141,7 @@ agents
 agents
   .command("memory")
   .requiredOption("--agent <id>", "agent id")
-  .option("--scope <scope>", "local|global|temporary|personal|group", "local")
+  .option("--scope <scope>", "global|temporary|personal|group", "temporary")
   .option("--limit <number>", "number of entries", "10")
   .option("--json", "print JSON output")
   .action(async (opts) => {
@@ -152,16 +151,14 @@ agents
     const limit = Number.parseInt(opts.limit, 10);
     const maxItems = Number.isFinite(limit) && limit > 0 ? limit : 10;
 
-    const scope = String(opts.scope || "local").toLowerCase();
-    if (!["local", "global", "temporary", "personal", "group"].includes(scope)) {
+    const scope = String(opts.scope || "temporary").toLowerCase();
+    if (!["global", "temporary", "personal", "group"].includes(scope)) {
       console.error(`unsupported scope: ${opts.scope}`);
       process.exitCode = 1;
       return;
     }
 
-    const entries = scope === "local"
-      ? await readRecentLocalMemory(paths, maxItems)
-      : scope === "global"
+    const entries = scope === "global"
         ? await readRecentGlobalMemory(paths, maxItems)
         : scope === "temporary"
           ? await readTemporaryContext(paths, maxItems)

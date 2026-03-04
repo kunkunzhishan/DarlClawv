@@ -24,7 +24,6 @@ const DEFAULT_SPLITTER_OVERLAP_CHARS = 60;
 const DEFAULT_SPLITTER_MIN_CHARS = 20;
 
 export type MemoryPaths = {
-  localPath: string;
   globalPath: string;
   temporaryContextPath: string;
   personalVectorPath: string;
@@ -508,7 +507,6 @@ export function resolveMemoryPaths(appConfig: AppConfig, agentId: string): Memor
   const agentRoot = path.resolve(appConfig.memory.local_store_root, agentId);
   const globalRoot = path.resolve(path.dirname(appConfig.memory.global_store_path));
   return {
-    localPath: path.join(agentRoot, "local.jsonl"),
     globalPath: path.resolve(appConfig.memory.global_store_path),
     temporaryContextPath: path.join(agentRoot, "temporary-context.json"),
     personalVectorPath: path.join(agentRoot, "personal-vector.json"),
@@ -557,11 +555,6 @@ export function resolveMemoryRuntimeOptions(appConfig: AppConfig): MemoryRuntime
   };
 }
 
-export async function appendLocalMemory(paths: MemoryPaths, entry: LocalMemoryEntry): Promise<void> {
-  await ensureMemoryPath(paths.localPath);
-  await appendFile(paths.localPath, `${JSON.stringify(entry)}\n`, "utf8");
-}
-
 export async function appendGlobalMemory(paths: MemoryPaths, entries: GlobalMemoryEntry[]): Promise<number> {
   if (entries.length === 0) {
     return 0;
@@ -570,15 +563,6 @@ export async function appendGlobalMemory(paths: MemoryPaths, entries: GlobalMemo
   const payload = entries.map((entry) => JSON.stringify(entry)).join("\n");
   await appendFile(paths.globalPath, `${payload}\n`, "utf8");
   return entries.length;
-}
-
-export async function readRecentLocalMemory(paths: MemoryPaths, limit = 8): Promise<LocalMemoryEntry[]> {
-  if (!(await fileExists(paths.localPath))) {
-    return [];
-  }
-  const raw = await readText(paths.localPath);
-  const parsed = parseJsonlLines<LocalMemoryEntry>(raw);
-  return parsed.slice(Math.max(0, parsed.length - limit));
 }
 
 export async function readRecentGlobalMemory(paths: MemoryPaths, limit = 8): Promise<GlobalMemoryEntry[]> {
@@ -743,15 +727,6 @@ export async function recallLayeredMemory(args: {
     personalHits,
     groupHits
   };
-}
-
-export function summarizeLocalMemory(entries: LocalMemoryEntry[]): string {
-  if (entries.length === 0) {
-    return "No local memory yet.";
-  }
-  return entries
-    .map((entry) => `[${entry.ts}] task="${trimSummary(entry.task, 120)}" status=${entry.status} summary="${trimSummary(entry.outputSummary, 220)}"`)
-    .join("\n");
 }
 
 export function summarizeGlobalMemory(entries: GlobalMemoryEntry[]): string {

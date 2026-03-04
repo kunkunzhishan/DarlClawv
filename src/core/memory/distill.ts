@@ -1,6 +1,7 @@
 import type { Thread } from "@openai/codex-sdk";
 import type { EngineRunResult, RunEvent } from "../../types/contracts.js";
 import type { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
+import { renderPromptTemplate } from "../../registry/prompt-templates.js";
 
 const MEMORY_DISTILL_SCHEMA = {
   type: "object",
@@ -98,16 +99,12 @@ export async function distillMemoryWithCurrentAgent(args: {
   result: EngineRunResult;
   onEvent?: (event: RunEvent) => void;
 }): Promise<DistilledMemory> {
-  const prompt = [
-    "Summarize durable memory from the task execution.",
-    "Return strict JSON only with keys: local_summary, global_memories.",
-    "local_summary: concise summary useful for this same agent in future tasks.",
-    "global_memories: 0-3 concise stable lessons reusable by other agents.",
-    `agent_id: ${args.agentId}`,
-    `task: ${args.task}`,
-    `status: ${args.result.status}`,
-    `output_or_error: ${(args.result.outputText || args.result.error || "").slice(0, 2000)}`
-  ].join("\n");
+  const prompt = renderPromptTemplate("memory/distill", {
+    agent_id: args.agentId,
+    task: args.task,
+    status: args.result.status,
+    output_or_error: (args.result.outputText || args.result.error || "").slice(0, 2000)
+  });
 
   try {
     const turn = await args.sdkClient.runThread({
@@ -142,16 +139,10 @@ export async function classifyTemporaryContextForVector(args: {
     outputSummary: entry.outputSummary
   }));
 
-  const prompt = [
-    "Classify temporary memory entries into personal vector memory and group vector memory.",
-    "Return strict JSON only with keys: personal_memories, group_memories.",
-    "Use concise durable statements; remove transient details.",
-    "personal_memories: useful for this same agent's future tasks.",
-    "group_memories: reusable cross-agent lessons (tool/process patterns).",
-    "Do not duplicate the same sentence in both arrays.",
-    `agent_id: ${args.agentId}`,
-    `entries: ${JSON.stringify(compactEntries)}`
-  ].join("\n");
+  const prompt = renderPromptTemplate("memory/temporary-promotion", {
+    agent_id: args.agentId,
+    entries_json: JSON.stringify(compactEntries)
+  });
 
   try {
     const turn = await args.sdkClient.runThread({

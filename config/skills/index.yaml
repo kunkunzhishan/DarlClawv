@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-02-28T00:00:00.000Z"
+updated_at: 2026-03-04T04:08:47.431Z
 recommended_sources:
   - id: openai-skills-github
     kind: skill
@@ -20,6 +20,24 @@ recommended_sources:
     trust_tier: popular
     enabled: true
 skills:
+  browser:
+    status: active
+    aliases: []
+    tags: []
+    trust_tier: standard
+    popularity:
+      uses: 0
+      success_rate: 0
+    repair_role: normal
+  find-skills:
+    status: active
+    aliases: []
+    tags: []
+    trust_tier: standard
+    popularity:
+      uses: 0
+      success_rate: 0
+    repair_role: normal
   mcp-recovery:
     status: active
     short: MCP/tool repair
@@ -38,6 +56,24 @@ skills:
       uses: 100
       success_rate: 0.9
     repair_role: repair
+  openclaw-skill-installer:
+    status: active
+    short: OpenClaw importer
+    aliases:
+      - openclaw-import
+      - skills-importer
+      - migrate-skill
+    tags:
+      - interoperability
+      - migration
+      - skills
+    usage_hint: Import and convert OpenClaw skills into config/skills/feature or config/skills/system.
+    trust_tier: certified
+    source_ref: internal
+    popularity:
+      uses: 1
+      success_rate: 1
+    repair_role: normal
   repo-basics:
     status: active
     short: Safe code edits
