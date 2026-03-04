@@ -31,9 +31,9 @@ import { loadAgentPack, type AgentPack } from "../../registry/agent-pack.js";
 import { loadAgentSpec } from "../../registry/agent-spec.js";
 import { loadAppConfig, loadPolicies, loadSkills } from "../../registry/index.js";
 import { loadSkillIndex } from "../../registry/skill-index.js";
-import { ensureRuntimeLibrary, loadRuntimeSkills } from "../../runtime/library/index.js";
+import { ensureRuntimeLibrary } from "../../runtime/library/index.js";
 import { appendEvent, createRun, finalizeRun, writeSnapshot } from "../../storage/index.js";
-import type { AgentSpec, EngineRunResult, PermissionProfile, Policy, RunEvent, RunMode, RunRequest } from "../../types/contracts.js";
+import type { AgentSpec, EngineRunResult, PermissionProfile, Policy, RunEvent, RunMode, RunRequest, Skill } from "../../types/contracts.js";
 import { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
 
 function nowIso(): string {
@@ -242,12 +242,8 @@ export async function runTask(
 
   const runtimePaths = await ensureRuntimeLibrary();
   const runtimeRoot = path.resolve(runtimePaths.root);
-  let runtimeSkills = await loadRuntimeSkills(runtimePaths);
-  const mergedSkillLibrary = (): typeof runtimeSkills => {
-    const byId = new Map<string, (typeof runtimeSkills)[number]>();
-    for (const skill of runtimeSkills) {
-      byId.set(skill.id, skill);
-    }
+  const mergedSkillLibrary = (): Skill[] => {
+    const byId = new Map<string, Skill>();
     for (const skill of configSkills.values()) {
       if (!byId.has(skill.id)) {
         byId.set(skill.id, skill);
@@ -538,7 +534,6 @@ export async function runTask(
       });
 
       if (capabilityResult.status === "ready") {
-        runtimeSkills = await loadRuntimeSkills(runtimePaths);
         await setWorkflowPhase(ctx, "running-main");
         await emit({
           type: "workflow.phase.changed",
