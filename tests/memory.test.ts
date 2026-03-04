@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { appendGlobalMemory, appendLocalMemory, resolveMemoryPaths } from "../src/core/memory/store.js";
+import { appendGlobalMemory, resolveMemoryPaths } from "../src/core/memory/store.js";
 import { shouldRunCompaction } from "../src/core/memory/compaction.js";
 import type { AppConfig } from "../src/types/contracts.js";
 
@@ -51,18 +51,10 @@ function baseConfig(root: string): AppConfig {
   };
 }
 
-test("memory store appends local and global entries", async () => {
+test("memory store appends global entries", async () => {
   await withTempDir(async (dir) => {
     const config = baseConfig(dir);
     const paths = resolveMemoryPaths(config, "default");
-    await appendLocalMemory(paths, {
-      ts: "2026-01-01T00:00:00Z",
-      runId: "run-1",
-      agentId: "default",
-      task: "task",
-      status: "ok",
-      outputSummary: "done"
-    });
     const appended = await appendGlobalMemory(paths, [{
       ts: "2026-01-01T00:00:00Z",
       sourceAgentId: "default",
@@ -71,9 +63,7 @@ test("memory store appends local and global entries", async () => {
     }]);
     assert.equal(appended, 1);
 
-    const localRaw = await readFile(paths.localPath, "utf8");
     const globalRaw = await readFile(paths.globalPath, "utf8");
-    assert.match(localRaw, /"runId":"run-1"/);
     assert.match(globalRaw, /Always verify outputs/);
   });
 });

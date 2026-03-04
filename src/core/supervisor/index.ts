@@ -10,12 +10,11 @@ import { selectSkillsForTask } from "../skill-selector/index.js";
 import { resolveCapability } from "../skill-manager/index.js";
 import { parseCapabilityRequest } from "../skill-manager/protocol.js";
 import { decidePermissionByAdmin } from "../security/admin-approver.js";
-import { toRuntimePermission, minProfile } from "../security/permissions.js";
+import { toRuntimePermission, minProfile, profileRank } from "../security/permissions.js";
 import { parsePermissionRequest } from "../security/protocol.js";
 import {
   appendGlobalMemory,
   appendGroupVectorMemories,
-  appendLocalMemory,
   appendPersonalVectorMemories,
   appendTemporaryContext,
   compactVectorMemories,
@@ -314,7 +313,8 @@ export async function runTask(
   let failureKind: EngineRunResult["failureKind"] | undefined;
   let error: string | undefined;
 
-  const maxMainCycles = Math.max(2, appConfig.workflow.max_capability_attempts + 1);
+  // Permission/capability handshakes may consume multiple turns before actual execution.
+  const maxMainCycles = Math.max(4, appConfig.workflow.max_capability_attempts + 2);
   let forceRepairSelection = false;
 
   for (let cycle = 1; cycle <= maxMainCycles; cycle += 1) {
@@ -413,6 +413,26 @@ export async function runTask(
         ts: nowIso()
       });
 
+      if (profileRank(permissionRequest.requested_profile) <= profileRank(currentProfile)) {
+        await emit({
+          type: "permission.admin.decided",
+          runId: ctx.runId,
+          decision: "grant",
+          requestedProfile: permissionRequest.requested_profile,
+          grantedProfile: currentProfile,
+          reason: `profile ${currentProfile} already active`,
+          ts: nowIso()
+        });
+        nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
+          headline: "Permission is already granted at this profile. Execute the original task now and do not request the same profile again.",
+          original_task: request.task,
+          granted_profile: currentProfile,
+          reason_line: ""
+        });
+        finalOutput = "";
+        continue;
+      }
+
       const adminDecision = runMode === "managed"
         ? await decidePermissionByAdmin({
             sdkClient: adminSdkClient,
@@ -439,7 +459,9 @@ export async function runTask(
       });
 
       if (adminDecision.decision === "grant") {
-        rebuildMainWorker(adminDecision.profile);
+        if (adminDecision.profile !== currentProfile) {
+          rebuildMainWorker(adminDecision.profile);
+        }
         nextMainTask = renderPromptSection("supervisor/messages", "next-main-permission-continue", {
           headline: "Permission granted. Continue the original task immediately.",
           original_task: request.task,
@@ -641,14 +663,6 @@ export async function runTask(
     });
 
     const localSummary = distilled.localSummary || summarizeResultForMemory(result);
-    await appendLocalMemory(memoryPaths, {
-      ts: baseMemoryEntry.ts,
-      runId: ctx.runId,
-      agentId: resolvedAgentId,
-      task: request.task,
-      status: result.status,
-      outputSummary: localSummary
-    });
 
     const appended = await appendGlobalMemory(
       memoryPaths,
@@ -702,8 +716,6 @@ export async function runTask(
       compacted: true,
       ts: nowIso()
     });
-  } else {
-    await appendLocalMemory(memoryPaths, baseMemoryEntry);
   }
 
   const temporaryCount = await countTemporaryContext(memoryPaths);

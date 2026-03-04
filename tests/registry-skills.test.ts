@@ -86,6 +86,30 @@ skills:
   assert.equal(skill?.meta.repair_role, "normal");
 });
 
+test("loadSkills supports categorized directories under config/skills", async () => {
+  const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skills-test-"));
+  const skillDir = path.join(configRoot, "skills", "system", "repo-basics");
+  await mkdir(skillDir, { recursive: true });
+
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: repo-basics
+description: Base description from categorized folder
+metadata:
+  inject_mode: prepend
+---
+
+# Repo Basics
+Skill body.
+`,
+    "utf8"
+  );
+
+  const skills = await loadSkills(configRoot);
+  assert.equal(skills.has("repo-basics"), true);
+});
+
 test("loadSkills records package entrypoint in global skills index", async () => {
   const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skills-test-"));
   const skillDir = path.join(configRoot, "skills", "tooling");

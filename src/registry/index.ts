@@ -332,7 +332,25 @@ export async function loadPolicies(configRoot = path.resolve("config")): Promise
 
 export async function loadSkills(configRoot = path.resolve("config")): Promise<Map<string, Skill>> {
   const root = path.join(configRoot, "skills");
-  const dirs = (await fileExists(root)) ? await listDirs(root) : [];
+  const dirs = (await fileExists(root))
+    ? await (async (): Promise<string[]> => {
+        const levelOne = await listDirs(root);
+        const discovered: string[] = [];
+        for (const dir of levelOne) {
+          if (await fileExists(path.join(dir, "SKILL.md"))) {
+            discovered.push(dir);
+            continue;
+          }
+          const levelTwo = await listDirs(dir);
+          for (const child of levelTwo) {
+            if (await fileExists(path.join(child, "SKILL.md"))) {
+              discovered.push(child);
+            }
+          }
+        }
+        return discovered;
+      })()
+    : [];
   const [markdownLibrary, skillIndexDoc] = await Promise.all([
     loadSkillMarkdownLibrary(configRoot),
     loadSkillIndex(configRoot)
