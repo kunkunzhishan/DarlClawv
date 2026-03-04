@@ -7,7 +7,7 @@
     "darlclawv": "dist/src/cli/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
     "dev": "node --loader ts-node/esm src/cli/index.ts",
     "start": "node dist/src/cli/index.js",
     "test": "node --test dist/tests/*.test.js"

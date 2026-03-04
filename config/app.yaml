@@ -8,7 +8,7 @@ engine:
   timeout_ms: 120000
 memory:
   local_store_root: .darlclawv-runtime/memory/agents
-  global_store_path: .darlclawv-runtime/memory/global/distilled.jsonl
+  global_vector_store_path: .darlclawv-runtime/memory/global/group-vector.json
   vector:
     dimension: 96
     personal_recall_top_k: 6
@@ -31,9 +31,6 @@ memory:
     promote_threshold: 24
     retain_after_promote: 12
     max_entries: 200
-  compaction:
-    trigger: on_task_finished
-    token_threshold: 50000
 web:
   autostart: true
   host: 127.0.0.1

@@ -114,7 +114,7 @@ export const appConfigSchema = z.object({
   memory: z
     .object({
       local_store_root: z.string().min(1).default(".darlclawv-runtime/memory/agents"),
-      global_store_path: z.string().min(1).default(".darlclawv-runtime/memory/global/distilled.jsonl"),
+      global_vector_store_path: z.string().min(1).default(".darlclawv-runtime/memory/global/group-vector.json"),
       vector: z
         .object({
           dimension: z.number().int().positive().default(96),
@@ -147,12 +147,6 @@ export const appConfigSchema = z.object({
           promote_threshold: z.number().int().positive().default(24),
           retain_after_promote: z.number().int().positive().default(12),
           max_entries: z.number().int().positive().default(200)
-        })
-        .default({}),
-      compaction: z
-        .object({
-          trigger: z.enum(["on_task_finished", "token_threshold"]).default("on_task_finished"),
-          token_threshold: z.number().int().positive().default(50000)
         })
         .default({})
     })

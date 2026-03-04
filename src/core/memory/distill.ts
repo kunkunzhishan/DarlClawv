@@ -1,20 +1,6 @@
 import type { Thread } from "@openai/codex-sdk";
-import type { EngineRunResult, RunEvent } from "../../types/contracts.js";
+import type { RunEvent } from "../../types/contracts.js";
 import type { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
-import { renderPromptTemplate } from "../../registry/prompt-templates.js";
-
-const MEMORY_DISTILL_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    local_summary: { type: "string" },
-    global_memories: {
-      type: "array",
-      items: { type: "string" }
-    }
-  },
-  required: ["local_summary", "global_memories"]
-} as const;
 
 const TEMPORARY_PROMOTION_SCHEMA = {
   type: "object",
@@ -32,43 +18,10 @@ const TEMPORARY_PROMOTION_SCHEMA = {
   required: ["personal_memories", "group_memories"]
 } as const;
 
-export type DistilledMemory = {
-  localSummary: string;
-  globalMemories: string[];
-};
-
 export type TemporaryPromotionDecision = {
   personalMemories: string[];
   groupMemories: string[];
 };
-
-function fallbackDistill(task: string, result: EngineRunResult): DistilledMemory {
-  const output = result.outputText?.trim() || result.error || "no output";
-  const localSummary = `Task: ${task}\nStatus: ${result.status}\nResult: ${output.slice(0, 500)}`;
-  return {
-    localSummary,
-    globalMemories: []
-  };
-}
-
-function parseDistilledMemory(text: string): DistilledMemory | null {
-  try {
-    const parsed = JSON.parse(text) as { local_summary?: unknown; global_memories?: unknown };
-    const localSummary = typeof parsed.local_summary === "string" ? parsed.local_summary.trim() : "";
-    const globalMemories = Array.isArray(parsed.global_memories)
-      ? parsed.global_memories.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
-      : [];
-    if (!localSummary) {
-      return null;
-    }
-    return {
-      localSummary,
-      globalMemories
-    };
-  } catch {
-    return null;
-  }
-}
 
 function parseTemporaryPromotion(text: string): TemporaryPromotionDecision | null {
   try {
@@ -91,40 +44,6 @@ function parseTemporaryPromotion(text: string): TemporaryPromotionDecision | nul
   }
 }
 
-export async function distillMemoryWithCurrentAgent(args: {
-  sdkClient: CodexSdkRuntimeClient;
-  thread: Thread;
-  agentId: string;
-  task: string;
-  result: EngineRunResult;
-  onEvent?: (event: RunEvent) => void;
-}): Promise<DistilledMemory> {
-  const prompt = renderPromptTemplate("memory/distill", {
-    agent_id: args.agentId,
-    task: args.task,
-    status: args.result.status,
-    output_or_error: (args.result.outputText || args.result.error || "").slice(0, 2000)
-  });
-
-  try {
-    const turn = await args.sdkClient.runThread({
-      thread: args.thread,
-      input: prompt,
-      emitDeltaEvents: false,
-      outputSchema: MEMORY_DISTILL_SCHEMA,
-      onEvent: args.onEvent
-    });
-    const parsed = parseDistilledMemory(turn.outputText);
-    if (parsed) {
-      return parsed;
-    }
-  } catch {
-    // Fall back to deterministic summarization.
-  }
-
-  return fallbackDistill(args.task, args.result);
-}
-
 export async function classifyTemporaryContextForVector(args: {
   sdkClient: CodexSdkRuntimeClient;
   thread: Thread;
@@ -139,10 +58,16 @@ export async function classifyTemporaryContextForVector(args: {
     outputSummary: entry.outputSummary
   }));
 
-  const prompt = renderPromptTemplate("memory/temporary-promotion", {
-    agent_id: args.agentId,
-    entries_json: JSON.stringify(compactEntries)
-  });
+  const prompt = [
+    "Classify temporary memory entries into personal vector memory and group vector memory.",
+    "Return strict JSON only with keys: personal_memories, group_memories.",
+    "Use concise durable statements; remove transient details.",
+    "personal_memories: useful for this same agent's future tasks.",
+    "group_memories: reusable cross-agent lessons (tool/process patterns).",
+    "Do not duplicate the same sentence in both arrays.",
+    `agent_id: ${args.agentId}`,
+    `entries: ${JSON.stringify(compactEntries)}`
+  ].join("\n");
 
   try {
     const turn = await args.sdkClient.runThread({
