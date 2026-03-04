@@ -211,6 +211,23 @@ export async function loadAppConfig(configRoot = path.resolve("src/config")): Pr
       codex_home: process.env.MYDARL_CODEX_HOME || parsed.engine.codex_home || ".darlclawv-runtime",
       timeout_ms: parsed.engine.timeout_ms ?? 120000
     },
+    top_llm: {
+      base_url:
+        envString("MYDARL_TOP_LLM_BASE_URL") ??
+        envString("OPENAI_BASE_URL") ??
+        parsed.top_llm?.base_url,
+      api_key_env: envString("MYDARL_TOP_LLM_API_KEY_ENV") ?? parsed.top_llm?.api_key_env ?? "OPENAI_API_KEY",
+      model:
+        envString("MYDARL_TOP_LLM_MODEL") ??
+        envString("OPENAI_MODEL") ??
+        parsed.top_llm?.model ??
+        parsed.engine.model,
+      timeout_ms:
+        envNumber("MYDARL_TOP_LLM_TIMEOUT_MS") ??
+        parsed.top_llm?.timeout_ms ??
+        parsed.engine.timeout_ms ??
+        120000
+    },
     memory: {
       local_store_root: parsed.memory?.local_store_root || "user/memory/agents",
       global_vector_store_path:

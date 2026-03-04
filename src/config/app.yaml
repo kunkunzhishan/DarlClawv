@@ -6,6 +6,10 @@ engine:
   provider: codex-sdk
   model: gpt-5-codex
   timeout_ms: 120000
+top_llm:
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5-codex
+  timeout_ms: 120000
 memory:
   local_store_root: user/memory/agents
   global_vector_store_path: user/memory/global/group-vector.json

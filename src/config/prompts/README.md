@@ -8,6 +8,7 @@ This directory contains all runtime prompt templates used by DarlClawv.
 - `prompt-compiler/`: main worker prompt composition templates.
   - `messages.md`: consolidated short prompt fragments.
   - `sections.md`: reusable optional section wrappers.
+- `orchestrator/`: top-level planner/approver/rewrite/distill prompts.
 - `skill-selector/`: selector prompt templates.
 - `memory/`: memory distill and temporary-classification prompts.
 - `skill-manager/`: capability-repair task prompts.

@@ -111,6 +111,14 @@ export const appConfigSchema = z.object({
     codex_home: z.string().min(1).optional(),
     timeout_ms: z.number().int().positive().default(120000)
   }),
+  top_llm: z
+    .object({
+      base_url: z.string().min(1).optional(),
+      api_key_env: z.string().min(1).default("OPENAI_API_KEY"),
+      model: z.string().min(1).optional(),
+      timeout_ms: z.number().int().positive().default(120000)
+    })
+    .default({}),
   memory: z
     .object({
       local_store_root: z.string().min(1).default("user/memory/agents"),
