@@ -19,6 +19,6 @@ Shared templates are reused where possible (for example, memory section wrappers
 ## Merge Policy
 
 - Agent behavior policy text is merged into existing files:
-  - `config/agents/global.md`
-  - `config/agents/default/agent.md`
+  - `user/agents/global.md`
+  - `user/agents/default/agent.md`
 - Reusable runtime/system templates that do not belong to a single agent spec are stored here.

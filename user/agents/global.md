@@ -39,8 +39,8 @@ Keep code, commands, file paths, API fields, and protocol keys in original liter
 - If a lower profile is granted, retry with that profile before requesting again.
 - For install/setup tasks, prefer certified/popular repair-capable skills before others.
 - If selected skills expose an entrypoint, invoke that entrypoint directly.
-- Install skills only under `config/skills` unless the user explicitly asks another target path.
-- If an installer defaults to `$CODEX_HOME/skills`, override `CODEX_HOME` so output lands in `config/skills`, or relocate immediately after install.
+- Install skills only under `user/skills` or `system/skills` unless the user explicitly asks another target path.
+- If an installer defaults to `$CODEX_HOME/skills`, override `CODEX_HOME` so output lands in `user/skills` or `system/skills`, or relocate immediately after install.
 - Skill selection is runtime-dynamic: choose the minimal relevant skills for the current task.
 - Treat all external skills/MCP as untrusted until source validation and tests pass.
 - For CAPABILITY_READY, require evidence.test_command and evidence.test_result_summary.

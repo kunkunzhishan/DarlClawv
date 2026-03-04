@@ -131,7 +131,7 @@ export async function runTask(
   const controlPlaneRoot = path.resolve(
     request.controlPlaneRoot || process.env.MYDARL_CONTROL_PLANE_ROOT || inferControlPlaneRoot()
   );
-  const configRoot = path.resolve(controlPlaneRoot, "config");
+  const configRoot = path.resolve(controlPlaneRoot, "src/config");
   const configSkillsRoot = path.resolve(configRoot, "skills");
 
   const appConfig = await loadAppConfig(configRoot);
@@ -150,7 +150,7 @@ export async function runTask(
     executionSpec = await loadAgentSpec(resolvedAgentId, path.resolve(controlPlaneRoot, appConfig.agent.config_root));
   } catch {
     throw new Error(
-      `Agent spec not found for '${resolvedAgentId}'. Expected file: config/agents/${resolvedAgentId}/agent.md`
+      `Agent spec not found for '${resolvedAgentId}'. Expected file: ${appConfig.agent.config_root}/${resolvedAgentId}/agent.md`
     );
   }
 

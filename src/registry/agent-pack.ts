@@ -46,7 +46,7 @@ async function readRequiredMarkdown(dir: string, name: string): Promise<{ metada
   return parsed;
 }
 
-export async function loadAgentPack(id: string, configRoot = path.resolve("config")): Promise<AgentPack> {
+export async function loadAgentPack(id: string, configRoot = path.resolve("src/config")): Promise<AgentPack> {
   const packDir = path.join(configRoot, "agent-packs", id);
   if (!(await fileExists(packDir))) {
     throw new Error(`Agent pack not found: ${id}`);
@@ -74,7 +74,7 @@ export async function loadAgentPack(id: string, configRoot = path.resolve("confi
   };
 }
 
-export async function loadAgentPacks(configRoot = path.resolve("config")): Promise<Map<string, AgentPack>> {
+export async function loadAgentPacks(configRoot = path.resolve("src/config")): Promise<Map<string, AgentPack>> {
   const packsRoot = path.join(configRoot, "agent-packs");
   if (!(await fileExists(packsRoot))) {
     return new Map();

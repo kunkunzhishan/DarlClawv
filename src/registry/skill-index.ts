@@ -1,4 +1,5 @@
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { z } from "zod";
 import { fileExists, readText, writeText } from "../utils/fs.js";
 import { parseYaml, stringifyYaml } from "../utils/yaml.js";
@@ -77,11 +78,23 @@ function normalizeForWrite(data: SkillIndex): SkillIndex {
   };
 }
 
-export function resolveSkillIndexPath(configRoot = path.resolve("config")): string {
-  return path.join(configRoot, "skills", "index.yaml");
+export function resolveSkillIndexPath(configRoot = path.resolve("src/config")): string {
+  if (process.env.MYDARL_SKILL_INDEX_PATH) {
+    return path.resolve(process.env.MYDARL_SKILL_INDEX_PATH);
+  }
+  const resolvedConfigRoot = path.resolve(configRoot);
+  const defaultConfigRoot = path.resolve("src/config");
+  const legacyPath = path.join(configRoot, "skills", "index.yaml");
+  if (resolvedConfigRoot !== defaultConfigRoot) {
+    return legacyPath;
+  }
+  if (existsSync(legacyPath)) {
+    return legacyPath;
+  }
+  return path.resolve(".darlclawv-runtime", "registry", "skills-index.yaml");
 }
 
-export async function loadSkillIndex(configRoot = path.resolve("config")): Promise<SkillIndexDocument> {
+export async function loadSkillIndex(configRoot = path.resolve("src/config")): Promise<SkillIndexDocument> {
   const indexPath = resolveSkillIndexPath(configRoot);
   if (!(await fileExists(indexPath))) {
     return {

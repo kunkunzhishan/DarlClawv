@@ -8,7 +8,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-const DEFAULT_STEEL_STAMP_PATH = "config/security/admin-steel-stamp.md";
+const DEFAULT_STEEL_STAMP_PATH = "src/config/security/admin-steel-stamp.md";
 const steelStampCache = new Map<string, string>();
 
 function renderSteelStamp(template: string, args: {

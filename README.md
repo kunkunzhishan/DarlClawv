@@ -45,7 +45,8 @@ Examples:
 - Skills define how features are executed.
 - New capabilities are added by adding Skills, not by rewriting core flow.
 - Repair Skills handle missing tool/capability paths and resume execution.
-- Canonical Skills location: `config/skills/system` and `config/skills/feature`.
+- Canonical user-editable Skills location: `user/skills`.
+- System Skills location: `system/skills`.
 - Skill definition follows OpenClaw-style `SKILL.md` frontmatter (`name`, `description`, `metadata`).
 
 ## Permission Management

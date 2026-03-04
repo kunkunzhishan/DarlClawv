@@ -190,7 +190,7 @@ function parseFrontmatter(filePath: string, content: string): { frontmatter: Rec
   return { frontmatter, body };
 }
 
-export async function loadAppConfig(configRoot = path.resolve("config")): Promise<AppConfig> {
+export async function loadAppConfig(configRoot = path.resolve("src/config")): Promise<AppConfig> {
   const appPath = path.join(configRoot, "app.yaml");
   if (!(await fileExists(appPath))) {
     throw new Error(`Missing app config: ${appPath}`);
@@ -200,7 +200,7 @@ export async function loadAppConfig(configRoot = path.resolve("config")): Promis
     ...parsed,
     agent: {
       default_id: parsed.agent?.default_id || parsed.default_agent || "default",
-      config_root: parsed.agent?.config_root || "config/agents"
+      config_root: parsed.agent?.config_root || "user/agents"
     },
     engine: {
       ...parsed.engine,
@@ -212,11 +212,11 @@ export async function loadAppConfig(configRoot = path.resolve("config")): Promis
       timeout_ms: parsed.engine.timeout_ms ?? 120000
     },
     memory: {
-      local_store_root: parsed.memory?.local_store_root || ".darlclawv-runtime/memory/agents",
+      local_store_root: parsed.memory?.local_store_root || "user/memory/agents",
       global_vector_store_path:
         envString("MYDARL_MEMORY_GLOBAL_VECTOR_STORE_PATH") ??
         parsed.memory?.global_vector_store_path ??
-        ".darlclawv-runtime/memory/global/group-vector.json",
+        "user/memory/global/group-vector.json",
       vector: {
         dimension: envNumber("MYDARL_MEMORY_VECTOR_DIMENSION") ?? parsed.memory?.vector?.dimension ?? 96,
         personal_recall_top_k:
@@ -285,12 +285,12 @@ export async function loadAppConfig(configRoot = path.resolve("config")): Promis
     },
     security: {
       default_admin_cap: parsed.security?.default_admin_cap ?? "workspace",
-      admin_stamp_path: parsed.security?.admin_stamp_path ?? "config/security/admin-steel-stamp.md"
+      admin_stamp_path: parsed.security?.admin_stamp_path ?? "src/config/security/admin-steel-stamp.md"
     }
   };
 }
 
-export async function loadAgents(configRoot = path.resolve("config")): Promise<Map<string, AgentProfile>> {
+export async function loadAgents(configRoot = path.resolve("src/config")): Promise<Map<string, AgentProfile>> {
   const dir = path.join(configRoot, "agents");
   const files = (await fileExists(dir))
     ? (await listFiles(dir)).filter((file) => file.endsWith(".yaml") || file.endsWith(".yml"))
@@ -312,7 +312,7 @@ export async function loadAgents(configRoot = path.resolve("config")): Promise<M
   return merged;
 }
 
-export async function loadPolicies(configRoot = path.resolve("config")): Promise<Map<string, Policy>> {
+export async function loadPolicies(configRoot = path.resolve("src/config")): Promise<Map<string, Policy>> {
   const dir = path.join(configRoot, "policies");
   const files = (await listFiles(dir)).filter((file) => file.endsWith(".yaml") || file.endsWith(".yml"));
   const items = await Promise.all(files.map((file) => readYamlFile<Policy>(policySchema, file)));
@@ -329,27 +329,51 @@ export async function loadPolicies(configRoot = path.resolve("config")): Promise
   return new Map(normalized.map((item) => [item.id, item]));
 }
 
-export async function loadSkills(configRoot = path.resolve("config")): Promise<Map<string, Skill>> {
-  const root = path.join(configRoot, "skills");
-  const dirs = (await fileExists(root))
-    ? await (async (): Promise<string[]> => {
-        const levelOne = await listDirs(root);
-        const discovered: string[] = [];
-        for (const dir of levelOne) {
-          if (await fileExists(path.join(dir, "SKILL.md"))) {
-            discovered.push(dir);
-            continue;
-          }
-          const levelTwo = await listDirs(dir);
-          for (const child of levelTwo) {
-            if (await fileExists(path.join(child, "SKILL.md"))) {
-              discovered.push(child);
-            }
-          }
+export async function loadSkills(configRoot = path.resolve("src/config")): Promise<Map<string, Skill>> {
+  const resolvedConfigRoot = path.resolve(configRoot);
+  const defaultConfigRoot = path.resolve("src/config");
+  const defaultUserSkillsRoot = path.resolve("user", "skills");
+  const defaultSystemSkillsRoot = path.resolve("system", "skills");
+  const legacyRoot = path.join(configRoot, "skills");
+
+  const declaredRoots = (resolvedConfigRoot === defaultConfigRoot
+    ? [
+        process.env.MYDARL_USER_SKILLS_ROOT ? path.resolve(process.env.MYDARL_USER_SKILLS_ROOT) : defaultUserSkillsRoot,
+        process.env.MYDARL_SYSTEM_SKILLS_ROOT
+          ? path.resolve(process.env.MYDARL_SYSTEM_SKILLS_ROOT)
+          : defaultSystemSkillsRoot
+      ]
+    : []
+  ).filter(Boolean);
+  const roots: string[] = [];
+  for (const root of declaredRoots) {
+    if (!roots.includes(root) && (await fileExists(root))) {
+      roots.push(root);
+    }
+  }
+  if ((await fileExists(legacyRoot)) && !roots.includes(legacyRoot)) {
+    roots.push(legacyRoot);
+  }
+
+  const discoverSkillDirs = async (root: string): Promise<string[]> => {
+    const levelOne = await listDirs(root);
+    const discovered: string[] = [];
+    for (const dir of levelOne) {
+      if (await fileExists(path.join(dir, "SKILL.md"))) {
+        discovered.push(dir);
+        continue;
+      }
+      const levelTwo = await listDirs(dir);
+      for (const child of levelTwo) {
+        if (await fileExists(path.join(child, "SKILL.md"))) {
+          discovered.push(child);
         }
-        return discovered;
-      })()
-    : [];
+      }
+    }
+    return discovered;
+  };
+
+  const dirs = (await Promise.all(roots.map((root) => discoverSkillDirs(root)))).flat();
   const [markdownLibrary, skillIndexDoc] = await Promise.all([
     loadSkillMarkdownLibrary(configRoot),
     loadSkillIndex(configRoot)

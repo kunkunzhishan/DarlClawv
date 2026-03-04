@@ -22,7 +22,7 @@ function baseConfig(root: string): AppConfig {
     default_policy: "safe-default",
     agent: {
       default_id: "default",
-      config_root: "config/agents"
+      config_root: "user/agents"
     },
     engine: {
       provider: "codex-sdk",

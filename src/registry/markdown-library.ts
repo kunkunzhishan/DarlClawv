@@ -72,7 +72,7 @@ function mergeUniqueStrings(...groups: string[][]): string[] {
   return [...merged];
 }
 
-export async function loadAgentMarkdownLibrary(configRoot = path.resolve("config")): Promise<Map<string, AgentProfile>> {
+export async function loadAgentMarkdownLibrary(configRoot = path.resolve("src/config")): Promise<Map<string, AgentProfile>> {
   const filePath = path.join(configRoot, "agents.md");
   if (!(await fileExists(filePath))) {
     return new Map();
@@ -107,8 +107,14 @@ export async function loadAgentMarkdownLibrary(configRoot = path.resolve("config
   return out;
 }
 
-export async function loadSkillMarkdownLibrary(configRoot = path.resolve("config")): Promise<Map<string, Skill>> {
-  const filePath = path.join(configRoot, "skills.md");
+export async function loadSkillMarkdownLibrary(configRoot = path.resolve("src/config")): Promise<Map<string, Skill>> {
+  const resolvedConfigRoot = path.resolve(configRoot);
+  const defaultConfigRoot = path.resolve("src/config");
+  const defaultPath = path.resolve("user", "skills.md");
+  const fallbackPath = path.join(configRoot, "skills.md");
+  const filePath = (resolvedConfigRoot === defaultConfigRoot && (await fileExists(defaultPath)))
+    ? defaultPath
+    : fallbackPath;
   if (!(await fileExists(filePath))) {
     return new Map();
   }

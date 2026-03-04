@@ -612,7 +612,9 @@ async function compactVectorStore(args: {
 }
 
 export function resolveMemoryPaths(appConfig: AppConfig, agentId: string): MemoryPaths {
-  const agentRoot = path.resolve(appConfig.memory.local_store_root, agentId);
+  const normalizedAgentId = (agentId || "default").trim() || "default";
+  const safeAgentId = normalizedAgentId.replace(/[\\/]/g, "_");
+  const agentRoot = path.resolve(appConfig.memory.local_store_root, safeAgentId);
   return {
     temporaryContextPath: path.join(agentRoot, "temporary-context.json"),
     personalVectorPath: path.join(agentRoot, "personal-vector.json"),
