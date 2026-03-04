@@ -100,6 +100,12 @@ export type AppConfig = {
     codex_home?: string;
     timeout_ms: number;
   };
+  top_llm?: {
+    base_url?: string;
+    api_key_env?: string;
+    model?: string;
+    timeout_ms?: number;
+  };
   memory: {
     local_store_root: string;
     global_vector_store_path: string;
@@ -210,6 +216,28 @@ export type PermissionDecision = {
   decision: "grant" | "deny" | "escalate";
   profile: PermissionProfile;
   reason: string;
+};
+
+export type TopLlmPlanDecision = {
+  worker_instruction?: string;
+  direct_reply?: string;
+  skill_hints: string[];
+  required_profile: PermissionProfile;
+};
+
+export type TopLlmApprovalDecision = {
+  decision: "grant" | "deny" | "escalate";
+  profile: PermissionProfile;
+  reason: string;
+};
+
+export type TopLlmRewriteDecision = {
+  final_reply: string;
+};
+
+export type TopLlmDistillDecision = {
+  personal_memories: string[];
+  group_memories: string[];
 };
 
 export type CapabilityProtocolMessage =

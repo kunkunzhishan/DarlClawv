@@ -8,6 +8,7 @@ This directory contains all runtime prompt templates used by DarlClawv.
 - `prompt-compiler/`: main worker prompt composition templates.
   - `messages.md`: consolidated short prompt fragments.
   - `sections.md`: reusable optional section wrappers.
+- `orchestrator/`: top-level planner/approver/rewrite/distill prompts.
 - `skill-selector/`: selector prompt templates.
 - `memory/`: memory distill and temporary-classification prompts.
 - `skill-manager/`: capability-repair task prompts.
@@ -19,6 +20,6 @@ Shared templates are reused where possible (for example, memory section wrappers
 ## Merge Policy
 
 - Agent behavior policy text is merged into existing files:
-  - `config/agents/global.md`
-  - `config/agents/default/agent.md`
+  - `user/agents/global.md`
+  - `user/agents/default/agent.md`
 - Reusable runtime/system templates that do not belong to a single agent spec are stored here.

@@ -1,14 +1,18 @@
 default_policy: safe-default
 agent:
   default_id: default
-  config_root: config/agents
+  config_root: user/agents
 engine:
   provider: codex-sdk
   model: gpt-5-codex
   timeout_ms: 120000
+top_llm:
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5-codex
+  timeout_ms: 120000
 memory:
-  local_store_root: .darlclawv-runtime/memory/agents
-  global_vector_store_path: .darlclawv-runtime/memory/global/group-vector.json
+  local_store_root: user/memory/agents
+  global_vector_store_path: user/memory/global/group-vector.json
   vector:
     dimension: 96
     personal_recall_top_k: 6
@@ -42,4 +46,4 @@ workflow:
   allow_promote_to_config_skills: true
 security:
   default_admin_cap: full
-  admin_stamp_path: config/security/admin-steel-stamp.md
+  admin_stamp_path: src/config/security/admin-steel-stamp.md

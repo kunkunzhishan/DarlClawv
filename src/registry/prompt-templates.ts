@@ -1,7 +1,9 @@
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
-const PROMPT_ROOT = path.resolve("config", "prompts");
+const PROMPT_ROOT = process.env.MYDARL_PROMPT_ROOT
+  ? path.resolve(process.env.MYDARL_PROMPT_ROOT)
+  : path.resolve("src", "config", "prompts");
 const cache = new Map<string, string>();
 const sectionCache = new Map<string, Map<string, string>>();
 

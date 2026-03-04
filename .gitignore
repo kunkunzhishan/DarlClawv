@@ -6,5 +6,6 @@ runs
 .darlclawv-runtime
 .mydarl-runtime
 .darlclawv-runtime
+user/memory
 logs
 *.log

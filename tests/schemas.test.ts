@@ -38,7 +38,7 @@ test("app config schema supports agent and memory defaults", () => {
     default_policy: "safe-default",
     agent: {
       default_id: "default",
-      config_root: "config/agents"
+      config_root: "user/agents"
     },
     engine: {
       provider: "codex-sdk",
@@ -47,7 +47,7 @@ test("app config schema supports agent and memory defaults", () => {
   });
 
   assert.equal(parsed.agent.default_id, "default");
-  assert.equal(parsed.memory.global_vector_store_path, ".darlclawv-runtime/memory/global/group-vector.json");
+  assert.equal(parsed.memory.global_vector_store_path, "user/memory/global/group-vector.json");
   assert.equal(parsed.memory.vector.dimension, 96);
   assert.equal(parsed.memory.vector.embedding.provider, "deterministic");
   assert.equal(parsed.memory.vector.splitter.max_chars, 400);

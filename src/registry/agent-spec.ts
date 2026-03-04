@@ -14,7 +14,11 @@ type ParsedAgentMarkdown = {
 
 function resolveAgentsRoot(configRoot: string): string {
   const resolved = path.resolve(configRoot);
-  return path.basename(resolved) === "agents" ? resolved : path.join(resolved, "agents");
+  const base = path.basename(resolved);
+  if (base === "agents" || base === "agent-designs") {
+    return resolved;
+  }
+  return path.join(resolved, "agents");
 }
 
 function normalizeSectionName(name: string): string {
@@ -117,7 +121,7 @@ async function loadGlobalAgentMarkdown(agentsRoot: string): Promise<ParsedAgentM
   return parseAgentMarkdown(raw, globalPath);
 }
 
-export async function loadAgentSpec(id: string, configRoot = path.resolve("config/agents")): Promise<AgentSpec> {
+export async function loadAgentSpec(id: string, configRoot = path.resolve("user/agents")): Promise<AgentSpec> {
   const agentsRoot = resolveAgentsRoot(configRoot);
   const agentDir = path.join(agentsRoot, id);
   const agentPath = path.join(agentDir, "agent.md");
@@ -164,7 +168,7 @@ export async function loadAgentSpec(id: string, configRoot = path.resolve("confi
   };
 }
 
-export async function listAgentSpecIds(configRoot = path.resolve("config/agents")): Promise<string[]> {
+export async function listAgentSpecIds(configRoot = path.resolve("user/agents")): Promise<string[]> {
   const agentsRoot = resolveAgentsRoot(configRoot);
   if (!(await fileExists(agentsRoot))) {
     return [];

@@ -177,6 +177,42 @@ export function compileAgentSpecPrompt(args: {
   return renderCommonChatPrompt(system, developer, args.task);
 }
 
+export function compileWorkerPrompt(args: {
+  task: string;
+  policy: Policy;
+  spec: AgentSpec;
+  skillLibrary: Skill[];
+  selectedSkillIds?: string[];
+  runtimePathsHint?: string;
+  localMemorySummary?: string;
+  globalMemorySummary?: string;
+}): CompiledPrompt {
+  const allowlistedSkills = args.spec.skillWhitelist.length > 0
+    ? args.skillLibrary.filter((skill) => args.spec.skillWhitelist.includes(skill.id))
+    : args.skillLibrary;
+  const relevantSkills = Array.isArray(args.selectedSkillIds)
+    ? allowlistedSkills.filter((skill) => args.selectedSkillIds?.includes(skill.id))
+    : allowlistedSkills;
+
+  const system = renderPromptTemplate("prompt-compiler/compile-worker-system", {
+    sandbox_mode: args.policy.sandbox.mode,
+    approval_policy: args.policy.sandbox.approval_policy,
+    network_enabled: String(args.policy.network.enabled)
+  });
+
+  const developer = renderPromptTemplate("prompt-compiler/compile-worker-developer", {
+    capability_policy: args.spec.capabilityPolicy.trim(),
+    runtime_paths_section: renderOptionalSection("runtime-paths", args.runtimePathsHint),
+    local_memory_section: renderOptionalSection("local-memory", args.localMemorySummary),
+    global_memory_section: renderOptionalSection("global-memory", args.globalMemorySummary),
+    skill_library: relevantSkills.length > 0
+      ? relevantSkills.map(renderSkillSection).join("\n\n")
+      : renderPromptSection("prompt-compiler/messages", "no-skills-available", {})
+  });
+
+  return renderCommonChatPrompt(system, developer, args.task);
+}
+
 export function pickPreferredAgent(
   agents: AgentProfile[],
   defaultAgentId: string,

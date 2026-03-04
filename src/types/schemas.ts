@@ -100,7 +100,7 @@ export const appConfigSchema = z.object({
   agent: z
     .object({
       default_id: z.string().min(1).default("default"),
-      config_root: z.string().min(1).default("config/agents")
+      config_root: z.string().min(1).default("user/agents")
     })
     .default({}),
   engine: z.object({
@@ -111,10 +111,18 @@ export const appConfigSchema = z.object({
     codex_home: z.string().min(1).optional(),
     timeout_ms: z.number().int().positive().default(120000)
   }),
+  top_llm: z
+    .object({
+      base_url: z.string().min(1).optional(),
+      api_key_env: z.string().min(1).default("OPENAI_API_KEY"),
+      model: z.string().min(1).optional(),
+      timeout_ms: z.number().int().positive().default(120000)
+    })
+    .default({}),
   memory: z
     .object({
-      local_store_root: z.string().min(1).default(".darlclawv-runtime/memory/agents"),
-      global_vector_store_path: z.string().min(1).default(".darlclawv-runtime/memory/global/group-vector.json"),
+      local_store_root: z.string().min(1).default("user/memory/agents"),
+      global_vector_store_path: z.string().min(1).default("user/memory/global/group-vector.json"),
       vector: z
         .object({
           dimension: z.number().int().positive().default(96),
@@ -169,7 +177,7 @@ export const appConfigSchema = z.object({
   security: z
     .object({
       default_admin_cap: z.enum(["safe", "workspace", "full"]).default("workspace"),
-      admin_stamp_path: z.string().min(1).default("config/security/admin-steel-stamp.md")
+      admin_stamp_path: z.string().min(1).default("src/config/security/admin-steel-stamp.md")
     })
     .default({})
 });

@@ -90,7 +90,7 @@ async function isDirectory(candidatePath: string): Promise<boolean> {
 
 function resolveConfigSkillPath(args: { controlPlaneRoot?: string; capabilityId: string }): string {
   const controlPlaneRoot = path.resolve(args.controlPlaneRoot || process.cwd());
-  return path.resolve(controlPlaneRoot, "config", "skills", args.capabilityId);
+  return path.resolve(controlPlaneRoot, "user", "skills", args.capabilityId);
 }
 
 async function materializeSkillToConfig(args: {
@@ -111,7 +111,7 @@ async function materializeSkillToConfig(args: {
   if (!inConfigSkills && !inRuntimeRoot) {
     return {
       ok: false,
-      reason: `skill_path must be under config/skills or runtime staging root: ${args.requestedSkillPath}`
+      reason: `skill_path must be under user/skills or runtime staging root: ${args.requestedSkillPath}`
     };
   }
 
@@ -317,7 +317,7 @@ export async function resolveCapability(args: {
         request: args.request,
         attempt,
         runtimeRoot: runtimePaths.root,
-        configSkillsRoot: path.resolve(controlPlaneRoot, "config", "skills"),
+        configSkillsRoot: path.resolve(controlPlaneRoot, "user", "skills"),
         codexHome: args.appConfig.engine.codex_home
           ? path.resolve(args.appConfig.engine.codex_home)
           : (process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : undefined),
@@ -407,7 +407,7 @@ export async function resolveCapability(args: {
         });
         continue;
       }
-      const configSkillsRoot = path.resolve(controlPlaneRoot, "config", "skills");
+      const configSkillsRoot = path.resolve(controlPlaneRoot, "user", "skills");
       const resolvedEntrypointPath = await resolveEntrypointPathInRoots(ready.entrypoint, [
         materialized.skillPath,
         controlPlaneRoot,
@@ -415,7 +415,7 @@ export async function resolveCapability(args: {
         runtimePaths.root
       ]);
       if (!resolvedEntrypointPath) {
-        const reason = `entrypoint does not reference an existing executable/script under config or runtime roots: ${ready.entrypoint}`;
+        const reason = `entrypoint does not reference an existing executable/script under user or runtime roots: ${ready.entrypoint}`;
         feedback = {
           type: "CAPABILITY_FEEDBACK",
           capability_id: args.request.capability_id,

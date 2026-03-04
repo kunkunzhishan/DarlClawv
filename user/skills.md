@@ -2,8 +2,8 @@
 
 This file provides lightweight metadata for skill selection.
 Canonical skill bodies remain under two directories (OpenClaw-style SKILL contract):
-- `config/skills/system/<skill-id>/SKILL.md`
-- `config/skills/feature/<skill-id>/SKILL.md`
+- `system/skills/<skill-id>/SKILL.md` (system, non-user surface)
+- `user/skills/<skill-id>/SKILL.md` (user-editable surface)
 
 ## repo-basics
 ```yaml
@@ -42,7 +42,7 @@ Capability recovery skill for blocked execution paths.
 ## openclaw-skill-installer
 ```yaml
 id: openclaw-skill-installer
-description: Convert and install OpenClaw skills into config/skills/feature or config/skills/system for DarlClawv runtime.
+description: Convert and install OpenClaw skills into user/skills or system/skills for DarlClawv runtime.
 summary: One-way OpenClaw compatibility importer.
 short: OpenClaw importer
 aliases: [openclaw-import, skills-importer, migrate-skill]
