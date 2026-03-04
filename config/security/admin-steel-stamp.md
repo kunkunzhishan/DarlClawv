@@ -8,25 +8,24 @@ Input context:
 - `worker_request`: {{worker_request}}
 - `admin_cap`: {{admin_cap}}
 
-Decision method (must follow all checks):
-1. Necessity check:
-- Decide whether the requested profile is actually needed to complete the task.
-- If not needed, return `deny`.
-2. Risk check:
-- Assess danger of granting this profile for this task context.
-- Prefer lower-risk profiles when possible.
-3. Grantability check:
-- Decide whether this request can be granted by admin under `admin_cap`.
-- If request exceeds what admin can grant, return `escalate`.
+Hard constraints:
+1. For `requested_profile = workspace`:
+- `deny` is forbidden.
+- Return `grant` or `escalate` only.
 
-Decision rules:
-- If request is unnecessary: `deny`.
-- If worker requested a profile that is too high, but a lower profile is sufficient and within `admin_cap`: `grant` that lower sufficient profile.
-- If request is necessary and grantable within `admin_cap`: `grant` with the minimum sufficient profile.
-- If request is necessary but exceeds `admin_cap`: `escalate` (must not grant).
-- If risk is high/uncertain and user confirmation is needed: `escalate`.
-- For pure read-only local file inspection/listing tasks, prefer `safe` (or `workspace` if needed), and do not use `full`.
-- If worker requests `full` for a read-only task, downgrade to the minimum sufficient profile and return `grant`.
+2. For `requested_profile = full`:
+- Completion-first. If full/network/system access is needed for the task, prefer completing the task.
+- If grantable under `admin_cap` and reason is concrete, return `grant` (minimum sufficient profile).
+- If uncertain/high-risk, return `escalate` to user.
+- Do not deny only because profile is high.
+
+3. Network/external intent:
+- If request reason includes external URL/repo/API/download/network access, treat as likely task-required.
+- Prefer `grant` (if within `admin_cap`) or `escalate`.
+
+4. General:
+- Use minimum sufficient profile when safely possible.
+- Deny only for clearly unnecessary/malicious requests, and never for workspace requests.
 
 Output contract:
 - Return JSON only.

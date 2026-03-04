@@ -44,5 +44,5 @@ workflow:
   enable_skill_manager: false
   allow_promote_to_config_skills: true
 security:
-  default_admin_cap: workspace
+  default_admin_cap: full
   admin_stamp_path: config/security/admin-steel-stamp.md
