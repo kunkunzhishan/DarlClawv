@@ -76,18 +76,75 @@ export class CodexSdkRuntimeClient {
       signal: args.signal
     };
 
-    const turn = await args.thread.run(args.input, turnOptions);
+    const streamed = await args.thread.runStreamed(args.input, turnOptions);
+    const latestItems = new Map<string, unknown>();
+    const streamErrors: string[] = [];
+    let turnFailedMessage: string | undefined;
+    let usage: RunThreadResult["usage"] | undefined;
 
-    for (const item of turn.items) {
-      if (item.type === "agent_message" && item.text) {
-        if (args.emitDeltaEvents === false) {
+    try {
+      for await (const event of streamed.events) {
+        if (event.type === "error") {
+          streamErrors.push(event.message);
+          args.onEvent?.({ type: "run.error", message: event.message, ts: nowIso() });
           continue;
         }
-        args.onEvent?.({ type: "engine.delta", chunk: item.text, ts: nowIso() });
+        if (event.type === "turn.failed") {
+          turnFailedMessage = event.error.message;
+          continue;
+        }
+        if (event.type === "turn.completed") {
+          usage = {
+            input_tokens: event.usage.input_tokens,
+            output_tokens: event.usage.output_tokens,
+            total_tokens: event.usage.input_tokens + event.usage.output_tokens
+          };
+          continue;
+        }
+        if (event.type === "item.started" || event.type === "item.updated" || event.type === "item.completed") {
+          latestItems.set(event.item.id, event.item);
+        }
+      }
+    } catch (error) {
+      if (streamErrors.length > 0) {
+        throw new Error(streamErrors[streamErrors.length - 1]);
+      }
+      throw error;
+    }
+
+    if (turnFailedMessage) {
+      throw new Error(turnFailedMessage);
+    }
+
+    const agentMessages: string[] = [];
+    const reasoningMessages: string[] = [];
+    let hasExecutionSignals = false;
+
+    for (const itemUnknown of latestItems.values()) {
+      const item = itemUnknown as {
+        type?: string;
+        text?: string;
+        aggregated_output?: string;
+        exit_code?: number;
+        server?: string;
+        tool?: string;
+        arguments?: unknown;
+        status?: string;
+        message?: string;
+      };
+      if (item.type === "agent_message" && item.text) {
+        agentMessages.push(item.text);
+        if (args.emitDeltaEvents !== false) {
+          args.onEvent?.({ type: "engine.delta", chunk: item.text, ts: nowIso() });
+        }
         continue;
       }
-
+      if (item.type === "reasoning" && item.text) {
+        reasoningMessages.push(item.text);
+        continue;
+      }
       if (item.type === "command_execution") {
+        hasExecutionSignals = true;
         if (item.aggregated_output) {
           args.onEvent?.({
             type: "runner.stdout",
@@ -95,43 +152,46 @@ export class CodexSdkRuntimeClient {
             ts: nowIso()
           });
         }
+        if (typeof item.exit_code === "number") {
+          args.onEvent?.({
+            type: "runner.exited",
+            code: item.exit_code,
+            ts: nowIso()
+          });
+        }
         continue;
       }
-
-      if (item.type === "file_change") {
-        continue;
-      }
-
       if (item.type === "mcp_tool_call") {
+        hasExecutionSignals = true;
+        const server = item.server || "mcp";
+        const tool = item.tool || "unknown";
         args.onEvent?.({
           type: "tool.called",
-          name: `${item.server}.${item.tool}`,
+          name: `${server}.${tool}`,
           args: item.arguments,
           ts: nowIso()
         });
         args.onEvent?.({
           type: "tool.result",
-          name: `${item.server}.${item.tool}`,
+          name: `${server}.${tool}`,
           ok: item.status !== "failed",
           ts: nowIso()
         });
+        continue;
       }
-
-      if (item.type === "error") {
+      if (item.type === "error" && item.message) {
+        hasExecutionSignals = true;
         args.onEvent?.({ type: "run.error", message: item.message, ts: nowIso() });
       }
     }
 
-    const usage = turn.usage
-      ? {
-          input_tokens: turn.usage.input_tokens,
-          output_tokens: turn.usage.output_tokens,
-          total_tokens: turn.usage.input_tokens + turn.usage.output_tokens
-        }
-      : undefined;
+    const outputText = agentMessages.join("\n").trim() || reasoningMessages.join("\n").trim();
+    if (!outputText && streamErrors.length > 0 && !hasExecutionSignals) {
+      throw new Error(streamErrors[streamErrors.length - 1]);
+    }
 
     return {
-      outputText: turn.finalResponse || "",
+      outputText,
       usage,
       threadId: args.thread.id
     };

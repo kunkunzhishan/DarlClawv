@@ -52,7 +52,15 @@ test("app config schema supports agent and memory defaults", () => {
   assert.equal(parsed.memory.vector.embedding.provider, "deterministic");
   assert.equal(parsed.memory.vector.splitter.max_chars, 400);
   assert.equal(parsed.memory.temporary.promote_threshold, 24);
+  assert.equal(parsed.workflow.execution_mode, "execute-first");
+  assert.equal(parsed.workflow.autonomy_profile, "aggressive");
   assert.equal(parsed.workflow.max_self_iter_cycles, 6);
+  assert.equal(parsed.workflow.max_permission_attempts, 3);
+  assert.equal(parsed.workflow.max_repair_attempts, 4);
+  assert.equal(parsed.workflow.max_total_minutes, 20);
   assert.equal(parsed.workflow.timeout_ms, 600000);
   assert.equal(parsed.security.default_admin_cap, "workspace");
+  assert.equal(parsed.security.trust_scope, "certified-popular");
+  assert.equal(parsed.evolution.policy_update_enabled, true);
+  assert.equal(parsed.evolution.risky_gate_enabled, true);
 });

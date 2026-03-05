@@ -53,11 +53,21 @@ function baseConfig(root: string): AppConfig {
       port: 4789
     },
     workflow: {
+      execution_mode: "execute-first",
+      autonomy_profile: "aggressive",
       max_self_iter_cycles: 6,
+      max_permission_attempts: 3,
+      max_repair_attempts: 4,
+      max_total_minutes: 20,
       timeout_ms: 600000
     },
     security: {
-      default_admin_cap: "workspace"
+      default_admin_cap: "workspace",
+      trust_scope: "certified-popular"
+    },
+    evolution: {
+      policy_update_enabled: true,
+      risky_gate_enabled: true
     }
   };
 }

@@ -49,40 +49,6 @@ export const skillFrontmatterSchema = z.object({
   metadata: skillMetaSchema.default({})
 });
 
-export const legacySkillYamlSchema = z.object({
-  id: z.string().min(1),
-  trigger: z
-    .object({
-      keywords: z.array(z.string()).optional(),
-      file_globs: z.array(z.string()).optional()
-    })
-    .default({}),
-  selector: z
-    .object({
-      short: z.string().optional(),
-      aliases: z.array(z.string()).optional(),
-      tags: z.array(z.string()).optional(),
-      usage_hint: z.string().optional()
-    })
-    .optional(),
-  inject_mode: z.enum(["prepend", "append"]).default("prepend"),
-  limits: z
-    .object({
-      max_tokens: z.number().int().positive().optional()
-    })
-    .optional(),
-  summary: z.string().optional(),
-  trust_tier: z.enum(["certified", "popular", "standard", "untrusted"]).optional(),
-  source_ref: z.string().optional(),
-  popularity: z
-    .object({
-      uses: z.number().int().nonnegative().default(0),
-      success_rate: z.number().min(0).max(1).default(0)
-    })
-    .optional(),
-  repair_role: z.enum(["normal", "repair"]).optional()
-});
-
 export const policySchema = z.object({
   id: z.string().min(1),
   sandbox: z.object({
@@ -109,6 +75,7 @@ export const appConfigSchema = z.object({
     cli_command: z.string().min(1).default("codex"),
     cli_args: z.array(z.string()).default([]),
     codex_home: z.string().min(1).optional(),
+    unset_codex_sandbox_env: z.boolean().default(false),
     timeout_ms: z.number().int().positive().default(120000)
   }),
   top_llm: z
@@ -168,14 +135,26 @@ export const appConfigSchema = z.object({
     .default({}),
   workflow: z
     .object({
+      execution_mode: z.literal("execute-first").default("execute-first"),
+      autonomy_profile: z.enum(["aggressive", "balanced", "tight"]).default("aggressive"),
       max_self_iter_cycles: z.number().int().positive().default(6),
+      max_permission_attempts: z.number().int().positive().default(3),
+      max_repair_attempts: z.number().int().positive().default(4),
+      max_total_minutes: z.number().int().positive().default(20),
       timeout_ms: z.number().int().positive().default(600000)
     })
     .default({}),
   security: z
     .object({
       default_admin_cap: z.enum(["safe", "workspace", "full"]).default("workspace"),
+      trust_scope: z.enum(["certified-only", "certified-popular", "all"]).default("certified-popular"),
       admin_stamp_path: z.string().min(1).default("src/config/security/admin-steel-stamp.md")
+    })
+    .default({}),
+  evolution: z
+    .object({
+      policy_update_enabled: z.boolean().default(true),
+      risky_gate_enabled: z.boolean().default(true)
     })
     .default({})
 });

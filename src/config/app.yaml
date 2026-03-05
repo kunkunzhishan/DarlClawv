@@ -5,6 +5,7 @@ agent:
 engine:
   provider: codex-sdk
   model: gpt-5-codex
+  unset_codex_sandbox_env: true
   timeout_ms: 120000
 top_llm:
   api_key_env: OPENAI_API_KEY
@@ -40,8 +41,17 @@ web:
   host: 127.0.0.1
   port: 4789
 workflow:
+  execution_mode: execute-first
+  autonomy_profile: aggressive
   max_self_iter_cycles: 6
+  max_permission_attempts: 3
+  max_repair_attempts: 4
+  max_total_minutes: 20
   timeout_ms: 600000
 security:
   default_admin_cap: full
+  trust_scope: certified-popular
   admin_stamp_path: src/config/security/admin-steel-stamp.md
+evolution:
+  policy_update_enabled: true
+  risky_gate_enabled: true

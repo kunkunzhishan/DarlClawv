@@ -3,7 +3,6 @@ import { z, ZodTypeAny } from "zod";
 import {
   appConfigSchema,
   agentSchema,
-  legacySkillYamlSchema,
   policySchema,
   skillFrontmatterSchema
 } from "../types/schemas.js";
@@ -209,6 +208,10 @@ export async function loadAppConfig(configRoot = path.resolve("src/config")): Pr
       cli_command: process.env.MYDARL_CODEX_COMMAND || parsed.engine.cli_command || "codex",
       cli_args: parsed.engine.cli_args ?? [],
       codex_home: process.env.MYDARL_CODEX_HOME || parsed.engine.codex_home || ".darlclawv-runtime",
+      unset_codex_sandbox_env:
+        envBoolean("MYDARL_UNSET_CODEX_SANDBOX_ENV") ??
+        parsed.engine.unset_codex_sandbox_env ??
+        false,
       timeout_ms: parsed.engine.timeout_ms ?? 120000
     },
     top_llm: {
@@ -295,10 +298,27 @@ export async function loadAppConfig(configRoot = path.resolve("src/config")): Pr
       port: parsed.web?.port ?? 4789
     },
     workflow: {
+      execution_mode: "execute-first",
+      autonomy_profile:
+        (envString("MYDARL_WORKFLOW_AUTONOMY_PROFILE") as "aggressive" | "balanced" | "tight" | undefined) ??
+        parsed.workflow?.autonomy_profile ??
+        "aggressive",
       max_self_iter_cycles:
         envNumber("MYDARL_WORKFLOW_MAX_SELF_ITER_CYCLES") ??
         parsed.workflow?.max_self_iter_cycles ??
         6,
+      max_permission_attempts:
+        envNumber("MYDARL_WORKFLOW_MAX_PERMISSION_ATTEMPTS") ??
+        parsed.workflow?.max_permission_attempts ??
+        3,
+      max_repair_attempts:
+        envNumber("MYDARL_WORKFLOW_MAX_REPAIR_ATTEMPTS") ??
+        parsed.workflow?.max_repair_attempts ??
+        4,
+      max_total_minutes:
+        envNumber("MYDARL_WORKFLOW_MAX_TOTAL_MINUTES") ??
+        parsed.workflow?.max_total_minutes ??
+        20,
       timeout_ms:
         envNumber("MYDARL_WORKFLOW_TIMEOUT_MS") ??
         parsed.workflow?.timeout_ms ??
@@ -306,7 +326,18 @@ export async function loadAppConfig(configRoot = path.resolve("src/config")): Pr
     },
     security: {
       default_admin_cap: parsed.security?.default_admin_cap ?? "workspace",
+      trust_scope: parsed.security?.trust_scope ?? "certified-popular",
       admin_stamp_path: parsed.security?.admin_stamp_path ?? "src/config/security/admin-steel-stamp.md"
+    },
+    evolution: {
+      policy_update_enabled:
+        envBoolean("MYDARL_EVOLUTION_POLICY_UPDATE_ENABLED") ??
+        parsed.evolution?.policy_update_enabled ??
+        true,
+      risky_gate_enabled:
+        envBoolean("MYDARL_EVOLUTION_RISKY_GATE_ENABLED") ??
+        parsed.evolution?.risky_gate_enabled ??
+        true
     }
   };
 }
@@ -355,25 +386,19 @@ export async function loadSkills(configRoot = path.resolve("src/config")): Promi
   const defaultConfigRoot = path.resolve("src/config");
   const defaultUserSkillsRoot = path.resolve("user", "skills");
   const defaultSystemSkillsRoot = path.resolve("system", "skills");
-  const legacyRoot = path.join(configRoot, "skills");
 
-  const declaredRoots = (resolvedConfigRoot === defaultConfigRoot
-    ? [
-        process.env.MYDARL_USER_SKILLS_ROOT ? path.resolve(process.env.MYDARL_USER_SKILLS_ROOT) : defaultUserSkillsRoot,
-        process.env.MYDARL_SYSTEM_SKILLS_ROOT
-          ? path.resolve(process.env.MYDARL_SYSTEM_SKILLS_ROOT)
-          : defaultSystemSkillsRoot
-      ]
-    : []
-  ).filter(Boolean);
+  const declaredRoots = [
+    process.env.MYDARL_USER_SKILLS_ROOT ? path.resolve(process.env.MYDARL_USER_SKILLS_ROOT) : undefined,
+    process.env.MYDARL_SYSTEM_SKILLS_ROOT ? path.resolve(process.env.MYDARL_SYSTEM_SKILLS_ROOT) : undefined
+  ].filter(Boolean) as string[];
+  if (resolvedConfigRoot === defaultConfigRoot) {
+    declaredRoots.push(defaultUserSkillsRoot, defaultSystemSkillsRoot);
+  }
   const roots: string[] = [];
   for (const root of declaredRoots) {
     if (!roots.includes(root) && (await fileExists(root))) {
       roots.push(root);
     }
-  }
-  if ((await fileExists(legacyRoot)) && !roots.includes(legacyRoot)) {
-    roots.push(legacyRoot);
   }
 
   const discoverSkillDirs = async (root: string): Promise<string[]> => {
@@ -416,17 +441,8 @@ export async function loadSkills(configRoot = path.resolve("src/config")): Promi
         `${bodyPath}#frontmatter`
       );
 
-      // Backward compatibility: allow metadata.yaml to override optional metadata fields.
-      const legacyMetaPath = path.join(dir, "metadata.yaml");
-      let legacyMeta: ReturnType<typeof legacySkillYamlSchema.parse> | undefined;
-      if (await fileExists(legacyMetaPath)) {
-        const legacyRaw = await readText(legacyMetaPath);
-        legacyMeta = validate(legacySkillYamlSchema, parseYaml(legacyRaw, legacyMetaPath), legacyMetaPath);
-      }
-
       const mergedTrigger = {
-        ...(frontmatter.metadata?.trigger ?? {}),
-        ...(legacyMeta?.trigger ?? {})
+        ...(frontmatter.metadata?.trigger ?? {})
       };
       const manifestPath = path.join(dir, "manifest.yaml");
       const manifest = await fileExists(manifestPath)
@@ -439,15 +455,15 @@ export async function loadSkills(configRoot = path.resolve("src/config")): Promi
           name: frontmatter.name,
           description: frontmatter.description,
           protocol: "codex-skill-v1" as const,
-          inject_mode: legacyMeta?.inject_mode ?? frontmatter.metadata.inject_mode,
+          inject_mode: frontmatter.metadata.inject_mode,
           trigger: mergedTrigger,
-          selector: legacyMeta?.selector ?? frontmatter.metadata?.selector,
-          limits: legacyMeta?.limits ?? frontmatter.metadata?.limits,
-          summary: legacyMeta?.summary ?? frontmatter.metadata?.summary,
-          trust_tier: legacyMeta?.trust_tier ?? frontmatter.metadata?.trust_tier,
-          source_ref: legacyMeta?.source_ref ?? frontmatter.metadata?.source_ref,
-          popularity: legacyMeta?.popularity ?? frontmatter.metadata?.popularity,
-          repair_role: legacyMeta?.repair_role ?? frontmatter.metadata?.repair_role
+          selector: frontmatter.metadata?.selector,
+          limits: frontmatter.metadata?.limits,
+          summary: frontmatter.metadata?.summary,
+          trust_tier: frontmatter.metadata?.trust_tier,
+          source_ref: frontmatter.metadata?.source_ref,
+          popularity: frontmatter.metadata?.popularity,
+          repair_role: frontmatter.metadata?.repair_role
         },
         body: parsedSkill.body,
         path: dir,
