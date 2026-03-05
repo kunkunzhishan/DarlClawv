@@ -295,10 +295,14 @@ export async function loadAppConfig(configRoot = path.resolve("src/config")): Pr
       port: parsed.web?.port ?? 4789
     },
     workflow: {
-      max_capability_attempts: parsed.workflow?.max_capability_attempts ?? 1,
-      capability_timeout_ms: parsed.workflow?.capability_timeout_ms ?? 600000,
-      enable_skill_manager: parsed.workflow?.enable_skill_manager ?? false,
-      allow_promote_to_config_skills: parsed.workflow?.allow_promote_to_config_skills ?? true
+      max_self_iter_cycles:
+        envNumber("MYDARL_WORKFLOW_MAX_SELF_ITER_CYCLES") ??
+        parsed.workflow?.max_self_iter_cycles ??
+        6,
+      timeout_ms:
+        envNumber("MYDARL_WORKFLOW_TIMEOUT_MS") ??
+        parsed.workflow?.timeout_ms ??
+        600000
     },
     security: {
       default_admin_cap: parsed.security?.default_admin_cap ?? "workspace",

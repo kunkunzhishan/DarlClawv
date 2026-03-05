@@ -8,10 +8,9 @@ import {
   resolveMemoryPaths,
   resolveMemoryRuntimeOptions
 } from "../core/memory/store.js";
-import { getPendingPromotions, promoteCapability, rejectCapabilityPromotion } from "../core/skill-manager/promotion.js";
 import { loadAgentSpec, listAgentSpecIds } from "../registry/agent-spec.js";
 import { loadAppConfig } from "../registry/index.js";
-import { getRunDetails, listRuns, toRunContext } from "../storage/index.js";
+import { getRunDetails, listRuns } from "../storage/index.js";
 import { loadDotEnv } from "../utils/env.js";
 import { ensureWebObservatory } from "../web/autostart.js";
 import { startWebServer } from "../web/server.js";
@@ -219,48 +218,6 @@ runs
         console.log(JSON.stringify(event));
       }
     }
-  });
-
-const capabilities = program.command("capabilities").description("Capability promotion commands");
-
-capabilities
-  .command("pending")
-  .requiredOption("--run <runId>", "run id")
-  .option("--json", "print JSON output")
-  .action(async (opts) => {
-    const ctx = toRunContext(opts.run);
-    const pending = await getPendingPromotions(ctx);
-    if (opts.json) {
-      console.log(JSON.stringify(pending, null, 2));
-      return;
-    }
-    if (pending.length === 0) {
-      console.log("no pending promotions");
-      return;
-    }
-    for (const item of pending) {
-      console.log(`${item.capabilityId}\t${item.sourcePath}\t${item.requestedAt}`);
-    }
-  });
-
-capabilities
-  .command("promote")
-  .requiredOption("--run <runId>", "run id")
-  .requiredOption("--capability <id>", "capability id")
-  .action(async (opts) => {
-    const ctx = toRunContext(opts.run);
-    const result = await promoteCapability({ ctx, capabilityId: opts.capability });
-    console.log(`promoted ${opts.capability} -> ${result.targetPath}`);
-  });
-
-capabilities
-  .command("reject")
-  .requiredOption("--run <runId>", "run id")
-  .requiredOption("--capability <id>", "capability id")
-  .action(async (opts) => {
-    const ctx = toRunContext(opts.run);
-    await rejectCapabilityPromotion({ ctx, capabilityId: opts.capability });
-    console.log(`rejected pending promotion for ${opts.capability}`);
   });
 
 program.parseAsync(process.argv).catch((error) => {

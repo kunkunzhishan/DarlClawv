@@ -36,9 +36,9 @@ Use this skill when the user wants an OpenClaw skill to work in DarlClawv.
    - If user provides an external URL/repo path, treat as remote source.
    - If user provides a local absolute path, treat as local source.
 2. For remote source:
-   - Emit `PERMISSION_REQUEST` JSON only with `requested_profile="full"` and a concrete network reason.
+   - State that network access is required and wait for permission via the supervisor (do not emit protocol JSON).
    - After permission is granted, download/clone the source to a local temp folder, then continue conversion.
-   - Do not skip permission flow and do not directly ask for local path first.
+   - Do not skip permission flow and do not directly ask for a local path first.
 3. For local source:
    - Continue conversion directly.
 4. Decide target class before writing files:
@@ -67,4 +67,4 @@ Use this skill when the user wants an OpenClaw skill to work in DarlClawv.
 - If class is unclear, default to `user/skills`.
 - Do not claim compatibility before checking `CONVERSION_REPORT.md`.
 - If conversion warns about memory semantics, explicitly state manual review points.
-- For remote URL installs, permission request is mandatory before any network operation.
+- For remote URL installs, do not perform network operations until permission is granted.

@@ -142,10 +142,8 @@ export type AppConfig = {
     port: number;
   };
   workflow: {
-    max_capability_attempts: number;
-    capability_timeout_ms: number;
-    enable_skill_manager: boolean;
-    allow_promote_to_config_skills: boolean;
+    max_self_iter_cycles: number;
+    timeout_ms: number;
   };
   security: {
     default_admin_cap: PermissionProfile;
@@ -160,52 +158,27 @@ export type RunRequest = {
   adminCap?: PermissionProfile;
   runMode?: RunMode;
   workflowId?: string;
-  disableSkillManager?: boolean;
   taskWorkspace?: string;
   controlPlaneRoot?: string;
 };
 
 export type FailureKind = "auth" | "network" | "model" | "tool" | "unknown";
 
-export type CapabilityRequest = {
-  type: "CAPABILITY_REQUEST";
-  capability_id: string;
-  goal: string;
-  io_contract: string;
-  acceptance_tests: string[];
-  constraints?: string[];
-  promote_to_config_skills?: boolean;
+export type WorkerTurnContext = {
+  cycle: number;
+  maxCycles: number;
+  instruction: string;
+  workerOutput: string;
+  userFacingOutput: string;
+  errorReason?: string;
+  thinking?: string;
+  nextAction?: string;
+  eventSummary?: string;
+  runtimeErrors?: string[];
 };
 
-export type CapabilityReady = {
-  type: "CAPABILITY_READY";
-  capability_id: string;
-  entrypoint: string;
-  skill_path: string;
-  tests_passed: boolean;
-  report?: string;
-  evidence: {
-    test_command: string;
-    test_result_summary: string;
-    external_receipt?: string;
-    side_effect_kind?: "none" | "external_message" | "external_api" | "other";
-  };
-};
-
-export type CapabilityFailed = {
-  type: "CAPABILITY_FAILED";
-  capability_id: string;
-  error: string;
-  attempts: number;
-};
-
-export type CapabilityFeedback = {
-  type: "CAPABILITY_FEEDBACK";
-  capability_id: string;
-  ok: boolean;
-  error?: string;
-};
-
+// Deprecated: capability protocol remains for backward compatibility, but not used by main loop.
+// Deprecated: permission protocol remains for backward compatibility, but not used by main loop.
 export type PermissionRequest = {
   type: "PERMISSION_REQUEST";
   requested_profile: PermissionProfile;
@@ -235,32 +208,17 @@ export type TopLlmRewriteDecision = {
   final_reply: string;
 };
 
+export type TopLlmIterateDecision = {
+  decision: "retry" | "escalate" | "finish" | "abort";
+  reason: string;
+  next_instruction?: string;
+  requested_profile?: PermissionProfile;
+  final_reply?: string;
+};
+
 export type TopLlmDistillDecision = {
   personal_memories: string[];
   group_memories: string[];
-};
-
-export type CapabilityProtocolMessage =
-  | CapabilityRequest
-  | CapabilityReady
-  | CapabilityFailed
-  | CapabilityFeedback;
-
-export type CapabilityResult = {
-  status: "ready" | "failed";
-  capability_id: string;
-  entrypoint?: string;
-  skill_path?: string;
-  tests_passed?: boolean;
-  report?: string;
-  evidence?: CapabilityReady["evidence"];
-  error?: string;
-  attempts: number;
-};
-
-export type PromotionRequest = {
-  runId: string;
-  capabilityId: string;
 };
 
 export type ThreadBinding = {
@@ -270,7 +228,6 @@ export type ThreadBinding = {
 export type WorkflowPhase =
   | "started"
   | "running-main"
-  | "resolving-capability"
   | "finished"
   | "failed";
 
@@ -279,7 +236,6 @@ export type WorkflowState = {
   runId: string;
   phase: WorkflowPhase;
   threadBindings: Partial<ThreadBinding>;
-  attemptsByCapability: Record<string, number>;
   startedAt: string;
   updatedAt: string;
   deadlineAt: string;
@@ -298,6 +254,19 @@ export type RunEvent =
   | { type: "run.started"; runId: string; ts: string }
   | { type: "workflow.started"; workflowId: string; ts: string }
   | { type: "workflow.phase.changed"; workflowId: string; phase: WorkflowPhase; ts: string }
+  | { type: "iteration.started"; runId: string; cycle: number; ts: string }
+  | { type: "iteration.worker.completed"; runId: string; cycle: number; ts: string }
+  | {
+      type: "iteration.decided";
+      runId: string;
+      cycle: number;
+      decision: "retry" | "escalate" | "finish" | "abort";
+      reason: string;
+      requestedProfile?: PermissionProfile;
+      ts: string;
+    }
+  | { type: "iteration.exhausted"; runId: string; maxCycles: number; ts: string }
+  | { type: "iteration.aborted"; runId: string; cycle: number; reason: string; ts: string }
   | { type: "thread.created"; role: keyof ThreadBinding; threadId: string; ts: string }
   | { type: "thread.resumed"; role: keyof ThreadBinding; threadId: string; ts: string }
   | { type: "prompt.compiled"; size: number; ts: string }
@@ -306,40 +275,6 @@ export type RunEvent =
   | { type: "runner.stdout"; line: string; ts: string }
   | { type: "runner.stderr"; line: string; ts: string }
   | { type: "runner.exited"; code: number; ts: string }
-  | { type: "capability.requested"; workflowId: string; capabilityId: string; ts: string }
-  | { type: "capability.resolve.started"; workflowId: string; capabilityId: string; ts: string }
-  | { type: "capability.resolve.attempt"; workflowId: string; capabilityId: string; attempt: number; ts: string }
-  | {
-      type: "capability.ready";
-      workflowId: string;
-      capabilityId: string;
-      entrypoint: string;
-      skillPath: string;
-      evidence?: CapabilityReady["evidence"];
-      ts: string;
-    }
-  | {
-      type: "capability.failed";
-      workflowId: string;
-      capabilityId: string;
-      attempts: number;
-      reason: string;
-      ts: string;
-    }
-  | {
-      type: "capability.promotion.pending";
-      workflowId: string;
-      capabilityId: string;
-      sourcePath: string;
-      ts: string;
-    }
-  | {
-      type: "capability.promoted";
-      workflowId: string;
-      capabilityId: string;
-      targetPath: string;
-      ts: string;
-    }
   | {
       type: "skills.selected";
       agentId: string;
@@ -348,7 +283,6 @@ export type RunEvent =
       reason?: string;
       ts: string;
     }
-  | { type: "capability.validation.failed"; workflowId: string; capabilityId: string; reason: string; ts: string }
   | { type: "permission.requested"; runId: string; requestedProfile: PermissionProfile; reason: string; ts: string }
   | {
       type: "permission.admin.decided";
@@ -366,44 +300,6 @@ export type RunEvent =
       requestedProfile: PermissionProfile;
       grantedProfile?: PermissionProfile;
       reason: string;
-      ts: string;
-    }
-  | {
-      type: "repair.triggered";
-      workflowId: string;
-      capabilityId: string;
-      reason: "install-intent" | "failure-signal";
-      ts: string;
-    }
-  | {
-      type: "repair.priority.selected";
-      workflowId: string;
-      capabilityId: string;
-      layer: "certified-popular" | "standard" | "script-fallback";
-      selectedSkillIds: string[];
-      ts: string;
-    }
-  | {
-      type: "repair.source.rejected";
-      workflowId: string;
-      capabilityId: string;
-      sourceRef: string;
-      reason: string;
-      ts: string;
-    }
-  | {
-      type: "repair.validation.failed";
-      workflowId: string;
-      capabilityId: string;
-      reason: string;
-      ts: string;
-    }
-  | {
-      type: "repair.completed";
-      workflowId: string;
-      capabilityId: string;
-      status: "ready" | "failed";
-      attempts: number;
       ts: string;
     }
   | { type: "memory.compaction.started"; runId: string; agentId: string; trigger: string; ts: string }

@@ -7,22 +7,15 @@ Conversation-first local all-purpose AI assistant.
 - Operate through dialogue: you provide a task in natural language.
 - Skills-driven execution: features are implemented through Skills.
 - Agent runtime is implemented with Codex (`@openai/codex-sdk`).
-- Built-in memory system: short-term + long-term + vector recall.
-- Worker runs in sandbox by default, with explicit escalation flow.
+- Built-in memory system: temporary context + vector recall.
+- Self-iteration loop: Top LLM decides retry/escalate/finish/abort.
+- Worker runs in a sandbox by default, with explicit escalation flow.
 
 ## Architecture
 
-- Agent implementation: Codex runtime (`@openai/codex-sdk`).
-- Capability layer: Skills selection + execution + repair flow.
-- Memory layer: temporary, local, global, and vector memory.
-- Security layer: sandboxed worker + escalation policy.
-
-## Memory Architecture
-
-- Temporary memory: recent context for continuity across turns.
-- Local memory: durable memory for the current agent.
-- Global memory: reusable cross-agent distilled knowledge.
-- Vector memory: personal/group semantic retrieval with compaction.
+- Top LLM: plan/iterate/approve/rewrite.
+- Worker: Codex runtime executes tasks.
+- Supervisor: owns the loop, permissions, and memory wiring.
 
 ## Conversation-Only Operation
 
@@ -44,16 +37,15 @@ Examples:
 - The system selects relevant Skills per task.
 - Skills define how features are executed.
 - New capabilities are added by adding Skills, not by rewriting core flow.
-- Repair Skills handle missing tool/capability paths and resume execution.
 - Canonical user-editable Skills location: `user/skills`.
 - System Skills location: `system/skills`.
 - Skill definition follows OpenClaw-style `SKILL.md` frontmatter (`name`, `description`, `metadata`).
 
 ## Permission Management
 
-- The worker executes inside a sandbox.
-- If blocked by permissions, it requests escalation.
-- `safe`: fully user-approved (no automatic approval by the model).
+- The worker executes inside a sandbox by default.
+- If blocked, the Top LLM requests escalation.
+- `safe`: fully user-approved (model cannot auto-approve).
 - `workspace`: partially model-approved.
 - `full`: fully model-approved.
 

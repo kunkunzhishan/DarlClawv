@@ -3,13 +3,10 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { compileWorkerPrompt } from "../prompt-compiler/index.js";
-import { findRepairSkillIds, isInstallIntentTask } from "../repair/index.js";
 import { fallbackSelectSkills } from "../skill-selector/index.js";
-import { resolveCapability } from "../skill-manager/index.js";
-import { parseCapabilityRequest } from "../skill-manager/protocol.js";
 import { toRuntimePermission, minProfile } from "../security/permissions.js";
-import { parsePermissionRequest } from "../security/protocol.js";
 import { createOrchestrator } from "../orchestrator/index.js";
+import { extractSelfReport } from "../iteration/worker-report.js";
 import {
   appendGroupVectorMemories,
   appendPersonalVectorMemories,
@@ -25,14 +22,22 @@ import {
   summarizeLayeredLocalMemory
 } from "../memory/store.js";
 import { initWorkflowState, setThreadBinding, setWorkflowPhase } from "../workflow/session.js";
-import { readWorkflowState } from "../workflow/state-store.js";
-import { loadAgentPack, type AgentPack } from "../../registry/agent-pack.js";
 import { loadAgentSpec } from "../../registry/agent-spec.js";
 import { loadAppConfig, loadPolicies, loadSkills } from "../../registry/index.js";
 import { loadSkillIndex } from "../../registry/skill-index.js";
 import { ensureRuntimeLibrary } from "../../runtime/library/index.js";
 import { appendEvent, createRun, finalizeRun, writeSnapshot } from "../../storage/index.js";
-import type { AgentSpec, EngineRunResult, PermissionProfile, Policy, RunEvent, RunMode, RunRequest, Skill } from "../../types/contracts.js";
+import type {
+  AgentSpec,
+  EngineRunResult,
+  PermissionProfile,
+  Policy,
+  RunEvent,
+  RunMode,
+  RunRequest,
+  Skill,
+  WorkerTurnContext
+} from "../../types/contracts.js";
 import { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
 
 function nowIso(): string {
@@ -64,6 +69,44 @@ function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
 function summarizeResultForMemory(result: EngineRunResult): string {
   const base = (result.outputText || result.error || "").trim();
   return base.length > 1000 ? `${base.slice(0, 1000)}...` : base;
+}
+
+function summarizeCycleEvents(events: RunEvent[]): { summary: string; runtimeErrors: string[] } {
+  const errors: string[] = [];
+  const stderr: string[] = [];
+  const toolFailures: string[] = [];
+  const exitCodes: number[] = [];
+
+  for (const event of events) {
+    if (event.type === "run.error") {
+      errors.push(event.message);
+    } else if (event.type === "runner.stderr") {
+      stderr.push(event.line);
+    } else if (event.type === "runner.exited" && event.code !== 0) {
+      exitCodes.push(event.code);
+    } else if (event.type === "tool.result" && !event.ok) {
+      toolFailures.push(event.name);
+    }
+  }
+
+  const summaryParts: string[] = [];
+  if (errors.length > 0) {
+    summaryParts.push(`runtime errors: ${errors.slice(-3).join(" | ")}`);
+  }
+  if (exitCodes.length > 0) {
+    summaryParts.push(`command exit codes: ${exitCodes.join(", ")}`);
+  }
+  if (stderr.length > 0) {
+    summaryParts.push(`stderr: ${stderr.slice(-3).join(" | ")}`);
+  }
+  if (toolFailures.length > 0) {
+    summaryParts.push(`tool failures: ${toolFailures.slice(-3).join(", ")}`);
+  }
+
+  return {
+    summary: summaryParts.length > 0 ? summaryParts.join("\n") : "none",
+    runtimeErrors: errors
+  };
 }
 
 function profileFromPolicy(policy: Policy): PermissionProfile {
@@ -153,19 +196,6 @@ async function askUserEscalation(args: {
   }
 }
 
-function repairPackFromAgentSpec(spec: AgentSpec): AgentPack {
-  return {
-    id: `${spec.id}-repair`,
-    persona: spec.persona,
-    workflow: spec.workflow,
-    style: spec.style,
-    ioContract: "Return strict capability protocol JSON only.",
-    skills: spec.capabilityPolicy,
-    skillWhitelist: spec.skillWhitelist,
-    path: spec.path
-  };
-}
-
 export type RunTaskHooks = {
   onEvent?: (event: RunEvent) => void;
 };
@@ -200,13 +230,6 @@ export async function runTask(
     );
   }
 
-  let repairPack: AgentPack;
-  try {
-    repairPack = await loadAgentPack("main-worker");
-  } catch {
-    repairPack = repairPackFromAgentSpec(executionSpec);
-  }
-
   const policyId = request.policyId || appConfig.default_policy;
   const configuredPolicy = policies.get(policyId);
   if (!configuredPolicy) {
@@ -234,8 +257,12 @@ export async function runTask(
   };
 
   let writeChain: Promise<void> = Promise.resolve();
+  let cycleEvents: RunEvent[] | null = null;
   const emitStream = (event: RunEvent): void => {
     hooks?.onEvent?.(event);
+    if (cycleEvents) {
+      cycleEvents.push(event);
+    }
     writeChain = writeChain.then(async () => appendEvent(ctx, event)).catch(() => undefined);
   };
 
@@ -343,7 +370,7 @@ export async function runTask(
   const workflow = await initWorkflowState({
     ctx,
     request: { ...request, agentId: resolvedAgentId, taskWorkspace, controlPlaneRoot },
-    timeoutMs: appConfig.workflow.capability_timeout_ms
+    timeoutMs: appConfig.workflow.timeout_ms
   });
   await writeSnapshot(ctx, "workflow", workflow);
   await emit({ type: "workflow.started", workflowId: workflow.workflowId, ts: nowIso() });
@@ -362,9 +389,12 @@ export async function runTask(
   let failureKind: EngineRunResult["failureKind"] | undefined;
   let error: string | undefined;
   const skipWorker = Boolean(directReply);
-
-  const maxMainCycles = Math.max(2, appConfig.workflow.max_capability_attempts + 1);
-  let forceRepairSelection = false;
+  const maxSelfIterCycles = Math.max(
+    1,
+    appConfig.workflow.max_self_iter_cycles ?? 1
+  );
+  let skipRewrite = false;
+  let lastTurnContext: WorkerTurnContext | null = null;
 
   const buildCommonContext = (): string => orchestrator
     ? orchestrator.buildCommonContext({
@@ -587,196 +617,242 @@ export async function runTask(
   }
 
   if (proceed) {
-    for (let cycle = 1; cycle <= maxMainCycles; cycle += 1) {
-    const allSkills = mergedSkillLibrary();
-    const installIntent = isInstallIntentTask(nextMainTask);
-    const candidateSkillsBase = executionSpec.skillWhitelist.length > 0
-      ? allSkills.filter((skill) => executionSpec.skillWhitelist.includes(skill.id))
-      : allSkills;
-    const candidateSkills = (forceRepairSelection || installIntent)
-      ? (() => {
-          const byId = new Map(candidateSkillsBase.map((skill) => [skill.id, skill]));
-          for (const repairSkill of allSkills.filter((skill) => skill.meta.repair_role === "repair")) {
-            if (!byId.has(repairSkill.id)) {
-              byId.set(repairSkill.id, repairSkill);
-            }
-          }
-          return [...byId.values()];
-        })()
-      : candidateSkillsBase;
-    const repairSkillIds = findRepairSkillIds(candidateSkills);
-    const maxSkills = 6;
-    const hinted = filterAllowedSkillIds(planSkillHints, candidateSkills, maxSkills);
-    const fallback = fallbackSelectSkills({
-      task: nextMainTask,
-      skillLibrary: candidateSkills,
-      maxSkills,
-      installIntent,
-      enforceSkillIds: forceRepairSelection ? repairSkillIds : []
-    });
-    const selectedSkillIds = hinted.length > 0
-      ? mergeSkillIds(hinted, forceRepairSelection ? repairSkillIds : [], maxSkills)
-      : fallback.selectedSkillIds;
-    const selectionMode = hinted.length > 0 ? "llm" : fallback.mode;
-    const selectionReason = hinted.length > 0 ? "planner skill hints" : fallback.reason;
+    for (let cycle = 1; cycle <= maxSelfIterCycles; cycle += 1) {
+      await emit({ type: "iteration.started", runId: ctx.runId, cycle, ts: nowIso() });
 
-    await emit({
-      type: "skills.selected",
-      agentId: resolvedAgentId,
-      selectedSkillIds,
-      mode: selectionMode,
-      reason: selectionReason,
-      ts: nowIso()
-    });
-
-    const prompt = compileWorkerPrompt({
-      task: nextMainTask,
-      policy: currentPolicy,
-      spec: executionSpec,
-      skillLibrary: allSkills,
-      selectedSkillIds,
-      runtimePathsHint: [
-        `runtime_root: ${runtimeRoot}`,
-        `mcp_runtime_root: ${runtimePaths.mcpDir}`,
-        "For MCP/tool virtualenvs and runtime artifacts, write under mcp_runtime_root instead of project-root .venv-* paths."
-      ].join("\n"),
-      localMemorySummary,
-      globalMemorySummary
-    });
-
-    await emit({ type: "prompt.compiled", size: prompt.size, ts: nowIso() });
-
-    let mainTurn;
-    try {
-      mainTurn = await mainSdkClient.runThread({
-        thread: mainThread,
-        input: prompt.fullText,
-        onEvent: emitStream
-      });
-    } catch (runError) {
-      status = "failed";
-      failureKind = "tool";
-      error = runError instanceof Error ? runError.message : String(runError);
-      finalOutput = "";
-      break;
-    }
-
-    if (!mainThreadBound && mainTurn.threadId) {
-      await setThreadBinding({ ctx, role: "main", threadId: mainTurn.threadId });
-      await emit({
-        type: "thread.created",
-        role: "main",
-        threadId: mainTurn.threadId,
-        ts: nowIso()
-      });
-      mainThreadBound = true;
-    }
-
-    usage = mainTurn.usage;
-    finalOutput = mainTurn.outputText.trim();
-
-    const permissionRequest = parsePermissionRequest(mainTurn.outputText);
-    if (permissionRequest) {
-      const resumeTask = [
-        "Permission granted. Continue the original task immediately.",
-        `Original task: ${request.task}`
-      ].join("\n");
-      const ok = await applyPermissionDecision({
-        requested_profile: permissionRequest.requested_profile,
-        reason: permissionRequest.reason
-      }, resumeTask);
-      if (ok) {
-        finalOutput = "";
-        continue;
-      }
-      break;
-    }
-
-    const capabilityRequest = parseCapabilityRequest(mainTurn.outputText);
-    if (capabilityRequest) {
-      forceRepairSelection = true;
-      await setWorkflowPhase(ctx, "resolving-capability");
-      await emit({
-        type: "workflow.phase.changed",
-        workflowId: workflow.workflowId,
-        phase: "resolving-capability",
-        ts: nowIso()
-      });
-      await emit({
-        type: "capability.requested",
-        workflowId: workflow.workflowId,
-        capabilityId: capabilityRequest.capability_id,
-        ts: nowIso()
-      });
-      await emit({
-        type: "repair.triggered",
-        workflowId: workflow.workflowId,
-        capabilityId: capabilityRequest.capability_id,
-        reason: installIntent ? "install-intent" : "failure-signal",
-        ts: nowIso()
-      });
-
-      const currentWorkflow = (await readWorkflowState(ctx)) || workflow;
-      const capabilityResult = await resolveCapability({
-        ctx,
-        workflow: currentWorkflow,
-        request: capabilityRequest,
-        appConfig,
-        policy: currentPolicy,
-        pack: repairPack,
+      const allSkills = mergedSkillLibrary();
+      const candidateSkills = executionSpec.skillWhitelist.length > 0
+        ? allSkills.filter((skill) => executionSpec.skillWhitelist.includes(skill.id))
+        : allSkills;
+      const maxSkills = 6;
+      const hinted = filterAllowedSkillIds(planSkillHints, candidateSkills, maxSkills);
+      const fallback = fallbackSelectSkills({
+        task: nextMainTask,
         skillLibrary: candidateSkills,
-        sdkClient: mainSdkClient,
-        runtimePaths,
-        controlPlaneRoot,
-        recommendedSources,
-        onEvent: emitStream
+        maxSkills
+      });
+      const selectedSkillIds = hinted.length > 0
+        ? mergeSkillIds(hinted, [], maxSkills)
+        : fallback.selectedSkillIds;
+      const selectionMode = hinted.length > 0 ? "llm" : fallback.mode;
+      const selectionReason = hinted.length > 0 ? "planner skill hints" : fallback.reason;
+
+      await emit({
+        type: "skills.selected",
+        agentId: resolvedAgentId,
+        selectedSkillIds,
+        mode: selectionMode,
+        reason: selectionReason,
+        ts: nowIso()
       });
 
-      if (capabilityResult.status === "ready") {
-        await setWorkflowPhase(ctx, "running-main");
+      const prompt = compileWorkerPrompt({
+        task: nextMainTask,
+        policy: currentPolicy,
+        spec: executionSpec,
+        skillLibrary: allSkills,
+        selectedSkillIds,
+        runtimePathsHint: [
+          `runtime_root: ${runtimeRoot}`,
+          `mcp_runtime_root: ${runtimePaths.mcpDir}`,
+          "For MCP/tool virtualenvs and runtime artifacts, write under mcp_runtime_root instead of project-root .venv-* paths."
+        ].join("\n"),
+        localMemorySummary,
+        globalMemorySummary
+      });
+
+      await emit({ type: "prompt.compiled", size: prompt.size, ts: nowIso() });
+
+      cycleEvents = [];
+      let mainTurn;
+      let cycleError: string | undefined;
+      try {
+        mainTurn = await mainSdkClient.runThread({
+          thread: mainThread,
+          input: prompt.fullText,
+          onEvent: emitStream
+        });
+      } catch (runError) {
+        cycleError = runError instanceof Error ? runError.message : String(runError);
+      }
+
+      if (mainTurn && !mainThreadBound && mainTurn.threadId) {
+        await setThreadBinding({ ctx, role: "main", threadId: mainTurn.threadId });
         await emit({
-          type: "workflow.phase.changed",
-          workflowId: workflow.workflowId,
-          phase: "running-main",
+          type: "thread.created",
+          role: "main",
+          threadId: mainTurn.threadId,
           ts: nowIso()
         });
+        mainThreadBound = true;
+      }
 
-        nextMainTask = [
-          "Continue the original task using the new capability immediately.",
-          `Original task: ${request.task}`,
-          `Resolved capability: ${JSON.stringify({
-            type: "CAPABILITY_READY",
-            capability_id: capabilityResult.capability_id,
-            entrypoint: capabilityResult.entrypoint,
-            skill_path: capabilityResult.skill_path,
-            tests_passed: capabilityResult.tests_passed,
-            evidence: capabilityResult.evidence
-          }, null, 2)}`
-        ].join("\n\n");
+      usage = mainTurn?.usage ?? usage;
+      const rawOutput = (mainTurn?.outputText || "").trim();
+      const { report, userFacingOutput } = extractSelfReport(rawOutput);
+      const { summary, runtimeErrors } = summarizeCycleEvents(cycleEvents);
+      cycleEvents = null;
+      lastTurnContext = {
+        cycle,
+        maxCycles: maxSelfIterCycles,
+        instruction: nextMainTask,
+        workerOutput: rawOutput,
+        userFacingOutput,
+        errorReason: cycleError || report.errorReason || runtimeErrors[0],
+        thinking: report.thinking,
+        nextAction: report.nextAction,
+        eventSummary: summary,
+        runtimeErrors
+      };
+
+      await emit({ type: "iteration.worker.completed", runId: ctx.runId, cycle, ts: nowIso() });
+
+      if (!orchestrator) {
+        if (rawOutput) {
+          finalOutput = userFacingOutput || rawOutput;
+          status = "ok";
+        } else {
+          status = "failed";
+          failureKind = "tool";
+          error = cycleError || "worker failed without output";
+        }
+        break;
+      }
+
+      let iterateDecision;
+      try {
+        iterateDecision = await orchestrator.iterate({
+          task: request.task,
+          instruction: nextMainTask,
+          cycle,
+          maxCycles: maxSelfIterCycles,
+          adminCap,
+          currentProfile,
+          workerOutput: rawOutput,
+          userFacingOutput,
+          errorReason: lastTurnContext.errorReason,
+          thinking: lastTurnContext.thinking,
+          nextAction: lastTurnContext.nextAction,
+          eventSummary: lastTurnContext.eventSummary,
+          runtimeErrors: lastTurnContext.runtimeErrors
+        });
+      } catch (iterateError) {
+        status = "failed";
+        failureKind = "tool";
+        error = iterateError instanceof Error ? iterateError.message : String(iterateError);
         finalOutput = "";
+        break;
+      }
+
+      if (!iterateDecision) {
+        status = "failed";
+        failureKind = "tool";
+        error = "iterate decision output was invalid";
+        finalOutput = "";
+        break;
+      }
+
+      await emit({
+        type: "iteration.decided",
+        runId: ctx.runId,
+        cycle,
+        decision: iterateDecision.decision,
+        reason: iterateDecision.reason,
+        requestedProfile: iterateDecision.requested_profile,
+        ts: nowIso()
+      });
+
+      if (iterateDecision.decision === "finish") {
+        finalOutput = iterateDecision.final_reply || userFacingOutput || rawOutput;
+        skipRewrite = Boolean(iterateDecision.final_reply);
+        status = "ok";
+        break;
+      }
+
+      if (iterateDecision.decision === "abort") {
+        await emit({
+          type: "iteration.aborted",
+          runId: ctx.runId,
+          cycle,
+          reason: iterateDecision.reason,
+          ts: nowIso()
+        });
+        finalOutput = iterateDecision.final_reply || userFacingOutput || rawOutput;
+        skipRewrite = Boolean(iterateDecision.final_reply);
+        status = "failed";
+        failureKind = "tool";
+        error = iterateDecision.reason;
+        break;
+      }
+
+      if (iterateDecision.decision === "escalate") {
+        const requestedProfile = iterateDecision.requested_profile || currentProfile;
+        const ok = await applyPermissionDecision({
+          requested_profile: requestedProfile,
+          reason: iterateDecision.reason
+        });
+        if (!ok) {
+          await emit({
+            type: "iteration.aborted",
+            runId: ctx.runId,
+            cycle,
+            reason: "permission escalation denied",
+            ts: nowIso()
+          });
+          finalOutput = iterateDecision.final_reply || "";
+          skipRewrite = Boolean(iterateDecision.final_reply);
+          status = "failed";
+          failureKind = "tool";
+          error = "permission escalation denied";
+          break;
+        }
+        nextMainTask = iterateDecision.next_instruction || nextMainTask;
         continue;
       }
 
-      status = "failed";
-      failureKind = "tool";
-      error = capabilityResult.error || "Capability resolution failed";
-      finalOutput = "";
-      break;
+      nextMainTask = iterateDecision.next_instruction || nextMainTask;
     }
+  }
 
-    forceRepairSelection = false;
-    break;
-  }
-  }
   }
 
   if (status === "ok" && !finalOutput) {
+    if (orchestrator && lastTurnContext) {
+      try {
+        const exhaustedDecision = await orchestrator.iterate({
+          task: request.task,
+          instruction: lastTurnContext.instruction,
+          cycle: maxSelfIterCycles,
+          maxCycles: maxSelfIterCycles,
+          adminCap,
+          currentProfile,
+          workerOutput: lastTurnContext.workerOutput,
+          userFacingOutput: lastTurnContext.userFacingOutput,
+          errorReason: `${lastTurnContext.errorReason || "iteration budget exhausted"}`,
+          thinking: lastTurnContext.thinking,
+          nextAction: lastTurnContext.nextAction,
+          eventSummary: lastTurnContext.eventSummary,
+          runtimeErrors: lastTurnContext.runtimeErrors
+        });
+        if (exhaustedDecision?.final_reply) {
+          finalOutput = exhaustedDecision.final_reply;
+          skipRewrite = true;
+        }
+      } catch (exhaustedError) {
+        await emit({
+          type: "run.error",
+          message: `iterate exhausted failed: ${exhaustedError instanceof Error ? exhaustedError.message : String(exhaustedError)}`,
+          ts: nowIso()
+        });
+      }
+    }
+    await emit({ type: "iteration.exhausted", runId: ctx.runId, maxCycles: maxSelfIterCycles, ts: nowIso() });
     status = "failed";
     failureKind = "tool";
-    error = `Main loop exited without final answer after ${maxMainCycles} cycles`;
+    error = `Main loop exited without final answer after ${maxSelfIterCycles} cycles`;
   }
 
-  if (status === "ok" && finalOutput && orchestrator && !skipWorker) {
+  if (status === "ok" && finalOutput && orchestrator && !skipWorker && !skipRewrite) {
     try {
       const rewritten = await orchestrator.rewrite({
         task: request.task,

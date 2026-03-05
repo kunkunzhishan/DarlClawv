@@ -35,7 +35,6 @@ export async function initWorkflowState(args: {
     runId: args.ctx.runId,
     phase: "started",
     threadBindings: await readThreadBindings(args.ctx),
-    attemptsByCapability: {},
     startedAt,
     updatedAt: startedAt,
     deadlineAt: addMs(startedAt, args.timeoutMs)
@@ -81,28 +80,6 @@ export async function setThreadBinding(args: {
   };
 
   await writeThreadBindings(args.ctx, next.threadBindings);
-  await writeWorkflowState(args.ctx, next);
-  return next;
-}
-
-export async function incrementCapabilityAttempt(args: {
-  ctx: RunContext;
-  capabilityId: string;
-}): Promise<WorkflowState> {
-  const current = await readWorkflowState(args.ctx);
-  if (!current) {
-    throw new Error("Workflow state not initialized");
-  }
-
-  const next: WorkflowState = {
-    ...current,
-    attemptsByCapability: {
-      ...current.attemptsByCapability,
-      [args.capabilityId]: (current.attemptsByCapability[args.capabilityId] || 0) + 1
-    },
-    updatedAt: nowIso()
-  };
-
   await writeWorkflowState(args.ctx, next);
   return next;
 }
