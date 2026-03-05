@@ -28,6 +28,7 @@ program
   .option("--workspace <path>", "task workspace path (default: current working directory)")
   .option("--run-mode <mode>", "permission mode: managed|direct", "managed")
   .option("--admin-cap <profile>", "admin max grant profile: safe|workspace|full")
+  .option("--autonomy-profile <profile>", "autonomy profile: aggressive|balanced|tight")
   .option("--json", "print structured JSON output instead of plain result text")
   .action(async (opts) => {
     const runMode = String(opts.runMode || "managed").toLowerCase();
@@ -40,6 +41,12 @@ program
     const adminCap = opts.adminCap ? String(opts.adminCap).toLowerCase() : undefined;
     if (adminCap && !["safe", "workspace", "full"].includes(adminCap)) {
       console.error(`invalid admin cap: ${opts.adminCap}`);
+      process.exitCode = 1;
+      return;
+    }
+    const autonomyProfile = opts.autonomyProfile ? String(opts.autonomyProfile).toLowerCase() : undefined;
+    if (autonomyProfile && !["aggressive", "balanced", "tight"].includes(autonomyProfile)) {
+      console.error(`invalid autonomy profile: ${opts.autonomyProfile}`);
       process.exitCode = 1;
       return;
     }
@@ -57,7 +64,8 @@ program
       task: opts.task,
       taskWorkspace: opts.workspace,
       runMode: runMode as "managed" | "direct",
-      adminCap: adminCap as "safe" | "workspace" | "full" | undefined
+      adminCap: adminCap as "safe" | "workspace" | "full" | undefined,
+      autonomyProfile: autonomyProfile as "aggressive" | "balanced" | "tight" | undefined
     }, opts.json
       ? undefined
       : {

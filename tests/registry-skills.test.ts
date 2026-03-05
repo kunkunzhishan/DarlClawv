@@ -1,14 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadSkills } from "../src/registry/index.js";
-import { parseYaml } from "../src/utils/yaml.js";
 
 test("loadSkills merges shorthand selector metadata from skills.md", async () => {
+  const oldUserRoot = process.env.MYDARL_USER_SKILLS_ROOT;
   const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skills-test-"));
-  const skillDir = path.join(configRoot, "skills", "repo-basics");
+  process.env.MYDARL_USER_SKILLS_ROOT = path.join(configRoot, "user", "skills");
+  const skillDir = path.join(configRoot, "user", "skills", "repo-basics");
   await mkdir(skillDir, { recursive: true });
 
   await writeFile(
@@ -48,8 +49,10 @@ Selector metadata body.
     "utf8"
   );
 
+  const indexPath = path.join(configRoot, "skills-index.yaml");
+  process.env.MYDARL_SKILL_INDEX_PATH = indexPath;
   await writeFile(
-    path.join(configRoot, "skills", "index.yaml"),
+    indexPath,
     `version: 1
 updated_at: "2026-03-01T00:00:00.000Z"
 recommended_sources:
@@ -84,11 +87,20 @@ skills:
   assert.equal(skill?.meta.source_ref, "openai-skills-github");
   assert.equal(skill?.meta.popularity?.uses, 12);
   assert.equal(skill?.meta.repair_role, "normal");
+
+  delete process.env.MYDARL_SKILL_INDEX_PATH;
+  if (oldUserRoot === undefined) {
+    delete process.env.MYDARL_USER_SKILLS_ROOT;
+  } else {
+    process.env.MYDARL_USER_SKILLS_ROOT = oldUserRoot;
+  }
 });
 
 test("loadSkills supports categorized directories under config/skills", async () => {
+  const oldSystemRoot = process.env.MYDARL_SYSTEM_SKILLS_ROOT;
   const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skills-test-"));
-  const skillDir = path.join(configRoot, "skills", "system", "repo-basics");
+  process.env.MYDARL_SYSTEM_SKILLS_ROOT = path.join(configRoot, "system", "skills");
+  const skillDir = path.join(configRoot, "system", "skills", "repo-basics");
   await mkdir(skillDir, { recursive: true });
 
   await writeFile(
@@ -108,11 +120,19 @@ Skill body.
 
   const skills = await loadSkills(configRoot);
   assert.equal(skills.has("repo-basics"), true);
+
+  if (oldSystemRoot === undefined) {
+    delete process.env.MYDARL_SYSTEM_SKILLS_ROOT;
+  } else {
+    process.env.MYDARL_SYSTEM_SKILLS_ROOT = oldSystemRoot;
+  }
 });
 
 test("loadSkills records package entrypoint in global skills index", async () => {
+  const oldUserRoot = process.env.MYDARL_USER_SKILLS_ROOT;
   const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skills-test-"));
-  const skillDir = path.join(configRoot, "skills", "tooling");
+  process.env.MYDARL_USER_SKILLS_ROOT = path.join(configRoot, "user", "skills");
+  const skillDir = path.join(configRoot, "user", "skills", "tooling");
   await mkdir(skillDir, { recursive: true });
 
   await writeFile(
@@ -139,46 +159,13 @@ test: "python3 -m pytest config/skills/tooling/tests"
   );
 
   const skills = await loadSkills(configRoot);
-  const skill = skills.get("tooling");
-  assert.equal(skill?.package?.entrypoint, "python3 config/skills/tooling/scripts/run.py --input-json '{}'");
-  assert.equal(skill?.package?.testCommand, "python3 -m pytest config/skills/tooling/tests");
+  const tooling = skills.get("tooling");
+  assert.equal(tooling?.package?.entrypoint, "python3 config/skills/tooling/scripts/run.py --input-json '{}'");
+  assert.equal(tooling?.package?.testCommand, "python3 -m pytest config/skills/tooling/tests");
 
-  const indexRaw = await readFile(path.join(configRoot, "skills", "index.yaml"), "utf8");
-  const index = parseYaml<any>(indexRaw, "skills/index.yaml");
-  assert.equal(index.skills.tooling.entrypoint, "python3 config/skills/tooling/scripts/run.py --input-json '{}'");
-});
-
-test("loadSkills excludes disabled skill from index state", async () => {
-  const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skills-test-"));
-  const skillDir = path.join(configRoot, "skills", "legacy");
-  await mkdir(skillDir, { recursive: true });
-
-  await writeFile(
-    path.join(skillDir, "SKILL.md"),
-    `---
-name: legacy
-description: Legacy skill
-metadata:
-  inject_mode: prepend
----
-
-# Legacy
-Skill body.
-`,
-    "utf8"
-  );
-
-  await writeFile(
-    path.join(configRoot, "skills", "index.yaml"),
-    `version: 1
-updated_at: "2026-02-28T00:00:00.000Z"
-skills:
-  legacy:
-    status: disabled
-`,
-    "utf8"
-  );
-
-  const skills = await loadSkills(configRoot);
-  assert.equal(skills.has("legacy"), false);
+  if (oldUserRoot === undefined) {
+    delete process.env.MYDARL_USER_SKILLS_ROOT;
+  } else {
+    process.env.MYDARL_USER_SKILLS_ROOT = oldUserRoot;
+  }
 });

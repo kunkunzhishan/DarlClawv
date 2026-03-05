@@ -1,19 +1,5 @@
-import type { AgentProfile, AgentSpec, CompiledPrompt, Policy, Skill } from "../../types/contracts.js";
-import type { AgentPack } from "../../registry/agent-pack.js";
+import type { AgentSpec, CompiledPrompt, Policy, Skill } from "../../types/contracts.js";
 import { renderPromptSection, renderPromptTemplate } from "../../registry/prompt-templates.js";
-
-function renderAgentSection(agent: AgentProfile): string {
-  const defaults = agent.default_skills.length > 0 ? agent.default_skills.join(", ") : "none";
-  const constraints = agent.constraints.length > 0 ? agent.constraints.join(" | ") : "none";
-  return renderPromptTemplate("prompt-compiler/agent-section", {
-    id: agent.id,
-    summary_line: agent.summary ? `summary: ${agent.summary}` : "",
-    style_line: agent.style ? `style: ${agent.style}` : "",
-    default_skills: defaults,
-    constraints,
-    system_prompt: agent.system_prompt.trim()
-  });
-}
 
 function renderSkillSection(skill: Skill): string {
   const packageRoot = skill.package?.root ?? skill.path;
@@ -57,21 +43,6 @@ function renderSkillSection(skill: Skill): string {
   });
 }
 
-function renderPackSkillSection(skills: Skill[], whitelist: string[]): string {
-  if (whitelist.length === 0) {
-    return renderPromptSection("prompt-compiler/messages", "pack-skill-whitelist-none", {});
-  }
-
-  const allowed = skills.filter((skill) => whitelist.includes(skill.id));
-  if (allowed.length === 0) {
-    return renderPromptSection("prompt-compiler/messages", "pack-skill-whitelist-missing", {
-      whitelist: whitelist.join(", ")
-    });
-  }
-
-  return allowed.map(renderSkillSection).join("\n\n");
-}
-
 function renderCommonChatPrompt(system: string, developer: string, user: string): CompiledPrompt {
   const fullText = renderPromptTemplate("common/chat-wrapper", {
     system,
@@ -92,50 +63,6 @@ function renderOptionalSection(sectionName: string, content?: string): string {
     return "";
   }
   return renderPromptSection("prompt-compiler/sections", sectionName, { content });
-}
-
-export function compilePrompt(args: {
-  task: string;
-  policy: Policy;
-  preferredAgent: AgentProfile;
-  agentLibrary: AgentProfile[];
-  skillLibrary: Skill[];
-}): CompiledPrompt {
-  const system = renderPromptTemplate("prompt-compiler/compile-runtime-system", {
-    sandbox_mode: args.policy.sandbox.mode,
-    approval_policy: args.policy.sandbox.approval_policy,
-    network_enabled: String(args.policy.network.enabled),
-    preferred_agent_id: args.preferredAgent.id
-  });
-  const developer = renderPromptTemplate("prompt-compiler/compile-runtime-developer", {
-    agent_library: args.agentLibrary.map(renderAgentSection).join("\n\n"),
-    skill_library: args.skillLibrary.map(renderSkillSection).join("\n\n")
-  });
-  return renderCommonChatPrompt(system, developer, args.task);
-}
-
-export function compileAgentPackPrompt(args: {
-  task: string;
-  policy: Policy;
-  pack: AgentPack;
-  skillLibrary: Skill[];
-}): CompiledPrompt {
-  const system = renderPromptTemplate("prompt-compiler/compile-agent-system", {
-    persona: args.pack.persona.trim(),
-    workflow: args.pack.workflow.trim(),
-    sandbox_mode: args.policy.sandbox.mode,
-    approval_policy: args.policy.sandbox.approval_policy,
-    network_enabled: String(args.policy.network.enabled)
-  });
-
-  const developer = renderPromptTemplate("prompt-compiler/compile-agent-pack-developer", {
-    style: args.pack.style.trim(),
-    io_contract: args.pack.ioContract.trim(),
-    skills_policy: args.pack.skills.trim(),
-    skill_library: renderPackSkillSection(args.skillLibrary, args.pack.skillWhitelist)
-  });
-
-  return renderCommonChatPrompt(system, developer, args.task);
 }
 
 export function compileAgentSpecPrompt(args: {
@@ -211,23 +138,4 @@ export function compileWorkerPrompt(args: {
   });
 
   return renderCommonChatPrompt(system, developer, args.task);
-}
-
-export function pickPreferredAgent(
-  agents: AgentProfile[],
-  defaultAgentId: string,
-  pinnedAgentId?: string
-): AgentProfile {
-  if (pinnedAgentId) {
-    const pinned = agents.find((agent) => agent.id === pinnedAgentId);
-    if (pinned) {
-      return pinned;
-    }
-  }
-
-  const fallback = agents.find((agent) => agent.id === defaultAgentId) ?? agents[0];
-  if (!fallback) {
-    throw new Error("No agents configured");
-  }
-  return fallback;
 }

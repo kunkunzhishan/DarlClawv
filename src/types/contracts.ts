@@ -72,6 +72,8 @@ export type SkillRecommendedSource = {
 
 export type PermissionProfile = "safe" | "workspace" | "full";
 export type RunMode = "managed" | "direct";
+export type AutonomyProfile = "aggressive" | "balanced" | "tight";
+export type TrustScope = "certified-only" | "certified-popular" | "all";
 
 export type Policy = {
   id: string;
@@ -98,6 +100,7 @@ export type AppConfig = {
     cli_command: string;
     cli_args: string[];
     codex_home?: string;
+    unset_codex_sandbox_env?: boolean;
     timeout_ms: number;
   };
   top_llm?: {
@@ -142,12 +145,22 @@ export type AppConfig = {
     port: number;
   };
   workflow: {
+    execution_mode: "execute-first";
+    autonomy_profile: AutonomyProfile;
     max_self_iter_cycles: number;
+    max_permission_attempts: number;
+    max_repair_attempts: number;
+    max_total_minutes: number;
     timeout_ms: number;
   };
   security: {
     default_admin_cap: PermissionProfile;
+    trust_scope: TrustScope;
     admin_stamp_path?: string;
+  };
+  evolution: {
+    policy_update_enabled: boolean;
+    risky_gate_enabled: boolean;
   };
 };
 
@@ -156,7 +169,9 @@ export type RunRequest = {
   task: string;
   policyId?: string;
   adminCap?: PermissionProfile;
+  // Deprecated: runMode retained for backward compatibility.
   runMode?: RunMode;
+  autonomyProfile?: AutonomyProfile;
   workflowId?: string;
   taskWorkspace?: string;
   controlPlaneRoot?: string;
@@ -191,35 +206,46 @@ export type PermissionDecision = {
   reason: string;
 };
 
-export type TopLlmPlanDecision = {
-  worker_instruction?: string;
-  direct_reply?: string;
-  skill_hints: string[];
-  required_profile: PermissionProfile;
-};
-
-export type TopLlmApprovalDecision = {
-  decision: "grant" | "deny" | "escalate";
-  profile: PermissionProfile;
-  reason: string;
-};
-
 export type TopLlmRewriteDecision = {
   final_reply: string;
-};
-
-export type TopLlmIterateDecision = {
-  decision: "retry" | "escalate" | "finish" | "abort";
-  reason: string;
-  next_instruction?: string;
-  requested_profile?: PermissionProfile;
-  final_reply?: string;
 };
 
 export type TopLlmDistillDecision = {
   personal_memories: string[];
   group_memories: string[];
 };
+
+export type StrategyStatsRecord = {
+  skill_id: string;
+  scenario_tag: string;
+  attempts: number;
+  successes: number;
+  avg_latency_ms: number;
+  last_error_kind?: string;
+  updated_at: string;
+};
+
+export type RecoveryDecision =
+  | {
+      status: "repaired";
+      skillId: string;
+      scenarioTag: string;
+      summary: string;
+      elapsedMs: number;
+    }
+  | {
+      status: "not_repairable";
+      scenarioTag: string;
+      reason: string;
+      elapsedMs: number;
+    }
+  | {
+      status: "need_user_gate";
+      skillId: string;
+      scenarioTag: string;
+      reason: string;
+      elapsedMs: number;
+    };
 
 export type ThreadBinding = {
   main: string;
@@ -254,6 +280,13 @@ export type RunEvent =
   | { type: "run.started"; runId: string; ts: string }
   | { type: "workflow.started"; workflowId: string; ts: string }
   | { type: "workflow.phase.changed"; workflowId: string; phase: WorkflowPhase; ts: string }
+  | {
+      type: "execution.blocked";
+      runId: string;
+      kind: "permission" | "capability" | "environment";
+      reason: string;
+      ts: string;
+    }
   | { type: "iteration.started"; runId: string; cycle: number; ts: string }
   | { type: "iteration.worker.completed"; runId: string; cycle: number; ts: string }
   | {
@@ -300,6 +333,38 @@ export type RunEvent =
       requestedProfile: PermissionProfile;
       grantedProfile?: PermissionProfile;
       reason: string;
+      ts: string;
+    }
+  | {
+      type: "recovery.started";
+      runId: string;
+      scenarioTag: string;
+      reason: string;
+      ts: string;
+    }
+  | {
+      type: "recovery.candidate.selected";
+      runId: string;
+      skillId: string;
+      trustTier: "certified" | "popular" | "standard" | "untrusted";
+      ts: string;
+    }
+  | { type: "recovery.test.passed"; runId: string; skillId: string; summary: string; ts: string }
+  | { type: "recovery.test.failed"; runId: string; skillId: string; reason: string; ts: string }
+  | {
+      type: "recovery.finished";
+      runId: string;
+      status: "repaired" | "not_repairable" | "need_user_gate";
+      summary: string;
+      ts: string;
+    }
+  | {
+      type: "strategy.updated";
+      runId: string;
+      skillId: string;
+      scenarioTag: string;
+      attempts: number;
+      successes: number;
       ts: string;
     }
   | { type: "memory.compaction.started"; runId: string; agentId: string; trigger: string; ts: string }

@@ -6,6 +6,7 @@ import { compileWorkerPrompt } from "../prompt-compiler/index.js";
 import { fallbackSelectSkills } from "../skill-selector/index.js";
 import { toRuntimePermission, minProfile } from "../security/permissions.js";
 import { createOrchestrator } from "../orchestrator/index.js";
+import { runRecoveryManager } from "../recovery/manager.js";
 import { extractSelfReport } from "../iteration/worker-report.js";
 import {
   appendGroupVectorMemories,
@@ -21,17 +22,25 @@ import {
   summarizeLayeredGroupMemory,
   summarizeLayeredLocalMemory
 } from "../memory/store.js";
+import {
+  readStrategyStats,
+  resolveStrategyStatsPath,
+  updateStrategyStats
+} from "../strategy/stats.js";
 import { initWorkflowState, setThreadBinding, setWorkflowPhase } from "../workflow/session.js";
 import { loadAgentSpec } from "../../registry/agent-spec.js";
 import { loadAppConfig, loadPolicies, loadSkills } from "../../registry/index.js";
 import { loadSkillIndex } from "../../registry/skill-index.js";
 import { ensureRuntimeLibrary } from "../../runtime/library/index.js";
 import { appendEvent, createRun, finalizeRun, writeSnapshot } from "../../storage/index.js";
+import { decidePermissionByAdmin } from "../security/admin-approver.js";
 import type {
   AgentSpec,
+  AutonomyProfile,
   EngineRunResult,
   PermissionProfile,
   Policy,
+  RecoveryDecision,
   RunEvent,
   RunMode,
   RunRequest,
@@ -71,6 +80,35 @@ function summarizeResultForMemory(result: EngineRunResult): string {
   return base.length > 1000 ? `${base.slice(0, 1000)}...` : base;
 }
 
+function sanitizeUserFacingOutput(text: string): string {
+  if (!text) {
+    return "";
+  }
+  return text
+    .split(/\r?\n/)
+    .filter((line) => {
+      const normalized = line.trim();
+      if (!normalized) {
+        return true;
+      }
+      if (/^\{"type":"PERMISSION_REQUEST"/.test(normalized)) {
+        return false;
+      }
+      if (/^RECOVERY_STATUS:/i.test(normalized)) {
+        return false;
+      }
+      if (/^SMOKE_TEST:/i.test(normalized)) {
+        return false;
+      }
+      if (/^SMOKE_RESULT:/i.test(normalized)) {
+        return false;
+      }
+      return true;
+    })
+    .join("\n")
+    .trim();
+}
+
 function summarizeCycleEvents(events: RunEvent[]): { summary: string; runtimeErrors: string[] } {
   const errors: string[] = [];
   const stderr: string[] = [];
@@ -107,6 +145,86 @@ function summarizeCycleEvents(events: RunEvent[]): { summary: string; runtimeErr
     summary: summaryParts.length > 0 ? summaryParts.join("\n") : "none",
     runtimeErrors: errors
   };
+}
+
+function classifyBlocker(args: {
+  rawOutput: string;
+  errorReason?: string;
+  runtimeErrors?: string[];
+  currentProfile: PermissionProfile;
+}): { kind: "permission" | "capability" | "environment" | "none"; reason: string } {
+  const source = [
+    args.rawOutput,
+    args.errorReason || "",
+    ...(args.runtimeErrors || [])
+  ]
+    .join("\n")
+    .toLowerCase();
+  const sourceRaw = [
+    args.rawOutput,
+    args.errorReason || "",
+    ...(args.runtimeErrors || [])
+  ].join("\n");
+
+  if (/(stream disconnected|error sending request for url .*\/responses|api\.openai\.com\/v1\/responses|turn failed)/i.test(source)) {
+    return { kind: "environment", reason: "model endpoint unavailable or unreachable" };
+  }
+
+  const hasNetworkSignal = /(could not resolve host|getaddrinfo enotfound|network is unreachable|econnrefused|etimedout|bad gateway|dns|connection error)/i.test(
+    source
+  );
+  const hasNetworkSignalZh = /(无法访问|不能访问|无法联网|网络受限|外部网络|网络被禁用|网络已禁用|无法连接|连接失败|无法解析|域名解析失败|无法打开网页|无法打开网站)/.test(
+    sourceRaw
+  );
+  if (hasNetworkSignal || hasNetworkSignalZh) {
+    if (args.currentProfile !== "full") {
+      return { kind: "permission", reason: "network access requires a higher runtime profile" };
+    }
+    return { kind: "environment", reason: "external network or DNS unavailable" };
+  }
+  if (/(operation not permitted|eacces|eperm|permission denied|approval policy|approval policy is never)/i.test(source)) {
+    return { kind: "permission", reason: "permission denied by runtime sandbox/policy" };
+  }
+  if (/(command not found|not found\n|missing capability|mcp.*unavailable|no such file or directory)/i.test(source)) {
+    return { kind: "capability", reason: "required tool/capability missing" };
+  }
+  return { kind: "none", reason: "" };
+}
+
+function scenarioTagFromTask(task: string): string {
+  const text = task.toLowerCase();
+  if (/(https?:\/\/|网页|网站|web|browse|browser|api)/i.test(text)) {
+    return "web-task";
+  }
+  if (/(install|setup|配置|mcp|tool|技能|skill)/i.test(text)) {
+    return "setup-task";
+  }
+  return "general";
+}
+
+function requestedProfileFromFailure(args: {
+  reason: string;
+  rawOutput: string;
+  currentProfile: PermissionProfile;
+}): PermissionProfile {
+  const source = `${args.reason}\n${args.rawOutput}`.toLowerCase();
+  if (/(npm install -g|apt|brew|system|network|https?:\/\/)/i.test(source)) {
+    return "full";
+  }
+  if (/(write|edit|create|workspace|install)/i.test(source)) {
+    return args.currentProfile === "safe" ? "workspace" : "full";
+  }
+  return args.currentProfile === "safe" ? "workspace" : "full";
+}
+
+function autonomyCycleBudget(profile: AutonomyProfile, configured: number): number {
+  if (profile === "tight") {
+    return Math.max(1, Math.min(configured, 3));
+  }
+  if (profile === "balanced") {
+    return Math.max(2, Math.min(configured, 6));
+  }
+  return Math.max(3, configured);
 }
 
 function profileFromPolicy(policy: Policy): PermissionProfile {
@@ -189,6 +307,17 @@ async function askUserEscalation(args: {
     const answer = await rl.question(
       `Permission escalation required: profile=${args.requestedProfile}. Reason: ${args.reason}. Approve? [y/N] `
     );
+    const normalized = answer.trim().toLowerCase();
+    return normalized === "y" || normalized === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+async function askYesNo(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(question);
     const normalized = answer.trim().toLowerCase();
     return normalized === "y" || normalized === "yes";
   } finally {
@@ -305,66 +434,15 @@ export async function runTask(
     })
   ]);
 
-  const requireTopLlm = runMode === "managed";
-  const topLlmBaseUrl = appConfig.top_llm?.base_url || process.env.OPENAI_BASE_URL;
-  const summarizeTopLlmError = (message: string): string => {
-    const statusMatch = message.match(/\b(4\d{2}|5\d{2})\b/);
-    if (statusMatch) {
-      const base = topLlmBaseUrl ? ` from ${topLlmBaseUrl}` : "";
-      return `Top LLM request failed: HTTP ${statusMatch[1]}${base}`;
-    }
-    return `Top LLM request failed: ${message}`;
-  };
-
-  const failRunEarly = async (message: string): Promise<{ runId: string; result: EngineRunResult }> => {
-    const error = message.trim();
-    await emit({ type: "run.error", message: error, ts: nowIso() });
-    const result: EngineRunResult = {
-      status: "failed",
-      outputText: "",
-      error,
-      failureKind: "tool"
-    };
-    await writeChain;
-    await emit({ type: "run.finished", status: result.status, ts: nowIso() });
-    await finalizeRun(ctx, result);
-    return { runId: ctx.runId, result };
-  };
-
   let orchestrator: ReturnType<typeof createOrchestrator> | null = null;
   try {
     orchestrator = createOrchestrator(appConfig);
   } catch (orchestratorError) {
-    const message = `planner init failed: ${orchestratorError instanceof Error ? orchestratorError.message : String(orchestratorError)}`;
-    await emit({ type: "run.error", message, ts: nowIso() });
-    if (requireTopLlm) {
-      return await failRunEarly(summarizeTopLlmError(message));
-    }
-  }
-
-  let planDecision = null;
-  let planErrorMessage: string | null = null;
-  if (orchestrator) {
-    try {
-      planDecision = await orchestrator.plan({
-        task: request.task,
-        agent: executionSpec,
-        skillLibrary: [...configSkills.values()],
-        adminCap,
-        currentProfile,
-        localMemorySummary,
-        globalMemorySummary
-      });
-    } catch (planError) {
-      planErrorMessage = `planner failed: ${planError instanceof Error ? planError.message : String(planError)}`;
-      await emit({ type: "run.error", message: planErrorMessage, ts: nowIso() });
-    }
-  }
-
-  await writeSnapshot(ctx, "planner", planDecision);
-  if (requireTopLlm && !planDecision) {
-    const message = planErrorMessage ?? "planner returned invalid output";
-    return await failRunEarly(summarizeTopLlmError(message));
+    await emit({
+      type: "run.error",
+      message: `orchestrator init failed: ${orchestratorError instanceof Error ? orchestratorError.message : String(orchestratorError)}`,
+      ts: nowIso()
+    });
   }
 
   const workflow = await initWorkflowState({
@@ -375,91 +453,93 @@ export async function runTask(
   await writeSnapshot(ctx, "workflow", workflow);
   await emit({ type: "workflow.started", workflowId: workflow.workflowId, ts: nowIso() });
 
-  const plannedInstruction = planDecision?.worker_instruction?.trim()
-    ? planDecision.worker_instruction.trim()
-    : request.task;
-  const planSkillHints = Array.isArray(planDecision?.skill_hints) ? planDecision?.skill_hints ?? [] : [];
-  const planRequiredProfile = planDecision?.required_profile ?? currentProfile;
-  const directReply = planDecision?.direct_reply?.trim() || "";
+  const autonomyProfile = request.autonomyProfile ?? appConfig.workflow.autonomy_profile;
+  const maxSelfIterCycles = autonomyCycleBudget(autonomyProfile, appConfig.workflow.max_self_iter_cycles ?? 6);
+  const maxPermissionAttempts = appConfig.workflow.max_permission_attempts ?? 3;
+  const maxRepairAttempts = appConfig.workflow.max_repair_attempts ?? 4;
+  const maxTotalMs = (appConfig.workflow.max_total_minutes ?? 20) * 60 * 1000;
+  const runStartedAt = Date.now();
+  const strategyStatsPath = resolveStrategyStatsPath(appConfig, resolvedAgentId);
+  const strategyStatsDoc = await readStrategyStats(strategyStatsPath);
+  const runScenarioTag = scenarioTagFromTask(request.task);
 
-  let nextMainTask = plannedInstruction;
-  let finalOutput = directReply;
+  let nextMainTask = request.task;
+  let finalOutput = "";
   let usage: EngineRunResult["usage"] | undefined;
   let status: EngineRunResult["status"] = "ok";
   let failureKind: EngineRunResult["failureKind"] | undefined;
   let error: string | undefined;
-  const skipWorker = Boolean(directReply);
-  const maxSelfIterCycles = Math.max(
-    1,
-    appConfig.workflow.max_self_iter_cycles ?? 1
-  );
-  let skipRewrite = false;
   let lastTurnContext: WorkerTurnContext | null = null;
+  let permissionAttempts = 0;
+  let repairAttempts = 0;
+  let emptyResponseStreak = 0;
 
-  const buildCommonContext = (): string => orchestrator
-    ? orchestrator.buildCommonContext({
-      adminCap,
-      currentProfile,
-      localMemorySummary,
-      globalMemorySummary
-    })
-    : "";
-
-  if (!skipWorker) {
-    const runtimePaths = await ensureRuntimeLibrary();
-    const runtimeRoot = path.resolve(runtimePaths.root);
-    const mergedSkillLibrary = (): Skill[] => {
-      const byId = new Map<string, Skill>();
-      for (const skill of configSkills.values()) {
-        if (!byId.has(skill.id)) {
-          byId.set(skill.id, skill);
-        }
+  const runtimePaths = await ensureRuntimeLibrary();
+  const runtimeRoot = path.resolve(runtimePaths.root);
+  const runtimePathsHint = [
+    `runtime_root: ${runtimeRoot}`,
+    `mcp_runtime_root: ${runtimePaths.mcpDir}`,
+    "For MCP/tool virtualenvs and runtime artifacts, write under mcp_runtime_root instead of project-root .venv-* paths."
+  ].join("\n");
+  const mergedSkillLibrary = (): Skill[] => {
+    const byId = new Map<string, Skill>();
+    for (const skill of configSkills.values()) {
+      if (!byId.has(skill.id)) {
+        byId.set(skill.id, skill);
       }
-      return [...byId.values()];
-    };
-    const mainAdditionalDirectories = [configSkillsRoot, runtimeRoot]
-      .filter((dir, idx, all) => all.indexOf(dir) === idx && existsSync(dir));
-    let mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
+    }
+    return [...byId.values()];
+  };
+  const mainAdditionalDirectories = [configSkillsRoot, runtimeRoot]
+    .filter((dir, idx, all) => all.indexOf(dir) === idx && existsSync(dir));
+
+  let mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
+    workingDirectory: taskWorkspace,
+    ...toRuntimePermission(currentProfile),
+    skipGitRepoCheck: true,
+    additionalDirectories: mainAdditionalDirectories
+  });
+  const adminSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
+    workingDirectory: taskWorkspace,
+    ...toRuntimePermission("safe"),
+    skipGitRepoCheck: true,
+    additionalDirectories: mainAdditionalDirectories
+  });
+
+  const rebuildMainWorker = (profile: PermissionProfile): void => {
+    currentProfile = profile;
+    currentPolicy = policyFromProfile(profile);
+    mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
       workingDirectory: taskWorkspace,
-      ...toRuntimePermission(currentProfile),
+      ...toRuntimePermission(profile),
       skipGitRepoCheck: true,
       additionalDirectories: mainAdditionalDirectories
     });
+    mainThread = mainSdkClient.startThread();
+    mainThreadBound = false;
+  };
 
-    const rebuildMainWorker = (profile: PermissionProfile): void => {
-      currentProfile = profile;
-      currentPolicy = policyFromProfile(profile);
-      mainSdkClient = new CodexSdkRuntimeClient(appConfig.engine, {
-        workingDirectory: taskWorkspace,
-        ...toRuntimePermission(profile),
-        skipGitRepoCheck: true,
-        additionalDirectories: mainAdditionalDirectories
-      });
-      mainThread = mainSdkClient.startThread();
-      mainThreadBound = false;
-    };
+  let mainThread = workflow.threadBindings.main
+    ? mainSdkClient.resumeThread(workflow.threadBindings.main)
+    : mainSdkClient.startThread();
+  let mainThreadBound = Boolean(workflow.threadBindings.main);
 
-    let mainThread = workflow.threadBindings.main
-      ? mainSdkClient.resumeThread(workflow.threadBindings.main)
-      : mainSdkClient.startThread();
-    let mainThreadBound = Boolean(workflow.threadBindings.main);
-
-    if (workflow.threadBindings.main) {
-      await emit({
-        type: "thread.resumed",
-        role: "main",
-        threadId: workflow.threadBindings.main,
-        ts: nowIso()
-      });
-    }
-
-    await setWorkflowPhase(ctx, "running-main");
+  if (workflow.threadBindings.main) {
     await emit({
-      type: "workflow.phase.changed",
-      workflowId: workflow.workflowId,
-      phase: "running-main",
+      type: "thread.resumed",
+      role: "main",
+      threadId: workflow.threadBindings.main,
       ts: nowIso()
     });
+  }
+
+  await setWorkflowPhase(ctx, "running-main");
+  await emit({
+    type: "workflow.phase.changed",
+    workflowId: workflow.workflowId,
+    phase: "running-main",
+    ts: nowIso()
+  });
 
   const decidePermission = async (permissionRequest: { requested_profile: PermissionProfile; reason: string }) => {
     if (isHigherProfile(permissionRequest.requested_profile, adminCap)) {
@@ -478,36 +558,15 @@ export async function runTask(
       };
     }
 
-    if (!orchestrator) {
-      return {
-        decision: "escalate" as const,
-        profile: permissionRequest.requested_profile,
-        reason: "planner unavailable"
-      };
-    }
+    const adminDecision = await decidePermissionByAdmin({
+      sdkClient: adminSdkClient,
+      task: request.task,
+      request: { type: "PERMISSION_REQUEST", ...permissionRequest },
+      adminCap,
+      steelStampPath: appConfig.security.admin_stamp_path,
+      onEvent: emitStream
+    });
 
-    let adminDecision = null;
-    try {
-      adminDecision = await orchestrator.approve({
-        task: request.task,
-        request: { type: "PERMISSION_REQUEST", ...permissionRequest },
-        adminCap,
-        commonContext: buildCommonContext()
-      });
-    } catch (approveError) {
-      await emit({
-        type: "run.error",
-        message: `approval planner failed: ${approveError instanceof Error ? approveError.message : String(approveError)}`,
-        ts: nowIso()
-      });
-    }
-    if (!adminDecision) {
-      return {
-        decision: "deny" as const,
-        profile: permissionRequest.requested_profile,
-        reason: "admin decision output was invalid"
-      };
-    }
     if (adminDecision.decision === "grant") {
       const clamped = clampProfile(adminDecision.profile, adminCap);
       const finalProfile = clampProfile(clamped, permissionRequest.requested_profile);
@@ -531,7 +590,15 @@ export async function runTask(
     };
   };
 
-  const applyPermissionDecision = async (permissionRequest: { requested_profile: PermissionProfile; reason: string }, resumeTask?: string) => {
+  const applyPermissionDecision = async (permissionRequest: { requested_profile: PermissionProfile; reason: string }) => {
+    permissionAttempts += 1;
+    if (permissionAttempts > maxPermissionAttempts) {
+      status = "failed";
+      failureKind = "tool";
+      error = `permission attempts exceeded budget (${maxPermissionAttempts})`;
+      return false;
+    }
+
     await emit({
       type: "permission.requested",
       runId: ctx.runId,
@@ -541,7 +608,6 @@ export async function runTask(
     });
 
     const adminDecision = await decidePermission(permissionRequest);
-
     await emit({
       type: "permission.admin.decided",
       runId: ctx.runId,
@@ -554,22 +620,17 @@ export async function runTask(
 
     if (adminDecision.decision === "grant") {
       rebuildMainWorker(adminDecision.profile);
-      if (resumeTask) {
-        nextMainTask = [
-          resumeTask,
-          `Granted profile: ${adminDecision.profile}`,
-          `Reason: ${adminDecision.reason}`
-        ].join("\n");
-        finalOutput = "";
-      }
+      nextMainTask = [
+        nextMainTask,
+        `Permission granted: ${adminDecision.profile}`,
+        `Reason: ${adminDecision.reason}`
+      ].join("\n");
       return true;
     }
-
     if (adminDecision.decision === "deny") {
       status = "failed";
       failureKind = "tool";
       error = `Permission denied by admin: ${adminDecision.reason}`;
-      finalOutput = "";
       return false;
     }
 
@@ -577,7 +638,6 @@ export async function runTask(
       requestedProfile: adminDecision.profile,
       reason: adminDecision.reason
     });
-
     await emit({
       type: "permission.user.decided",
       runId: ctx.runId,
@@ -587,272 +647,287 @@ export async function runTask(
       reason: approved ? "approved by user escalation" : "rejected by user",
       ts: nowIso()
     });
-
     if (!approved) {
       status = "failed";
       failureKind = "tool";
       error = `User rejected permission escalation for profile ${permissionRequest.requested_profile}`;
-      finalOutput = "";
       return false;
     }
 
     rebuildMainWorker(adminDecision.profile);
-    if (resumeTask) {
-      nextMainTask = [
-        resumeTask,
-        `Granted profile: ${adminDecision.profile}`,
-        `Reason: ${adminDecision.reason}`
-      ].join("\n");
-      finalOutput = "";
-    }
+    nextMainTask = [
+      nextMainTask,
+      `Permission granted: ${adminDecision.profile}`,
+      `Reason: ${adminDecision.reason}`
+    ].join("\n");
     return true;
   };
 
-  let proceed = true;
-  if (isHigherProfile(planRequiredProfile, currentProfile)) {
-    proceed = await applyPermissionDecision({
-      requested_profile: planRequiredProfile,
-      reason: "planner requested higher permission"
+  for (let cycle = 1; cycle <= maxSelfIterCycles; cycle += 1) {
+    if (Date.now() - runStartedAt > maxTotalMs) {
+      status = "failed";
+      failureKind = "tool";
+      error = `run time budget exceeded (${appConfig.workflow.max_total_minutes ?? 20} minutes)`;
+      await emit({
+        type: "run.error",
+        message: error,
+        ts: nowIso()
+      });
+      break;
+    }
+
+    await emit({ type: "iteration.started", runId: ctx.runId, cycle, ts: nowIso() });
+
+    const allSkills = mergedSkillLibrary();
+    const candidateSkills = executionSpec.skillWhitelist.length > 0
+      ? allSkills.filter((skill) => executionSpec.skillWhitelist.includes(skill.id))
+      : allSkills;
+    const selected = fallbackSelectSkills({
+      task: nextMainTask,
+      skillLibrary: candidateSkills,
+      maxSkills: 6,
+      strategy: {
+        records: strategyStatsDoc.records,
+        scenarioTag: runScenarioTag
+      }
     });
-  }
 
-  if (proceed) {
-    for (let cycle = 1; cycle <= maxSelfIterCycles; cycle += 1) {
-      await emit({ type: "iteration.started", runId: ctx.runId, cycle, ts: nowIso() });
+    await emit({
+      type: "skills.selected",
+      agentId: resolvedAgentId,
+      selectedSkillIds: selected.selectedSkillIds,
+      mode: selected.mode,
+      reason: selected.reason,
+      ts: nowIso()
+    });
 
-      const allSkills = mergedSkillLibrary();
-      const candidateSkills = executionSpec.skillWhitelist.length > 0
-        ? allSkills.filter((skill) => executionSpec.skillWhitelist.includes(skill.id))
-        : allSkills;
-      const maxSkills = 6;
-      const hinted = filterAllowedSkillIds(planSkillHints, candidateSkills, maxSkills);
-      const fallback = fallbackSelectSkills({
-        task: nextMainTask,
-        skillLibrary: candidateSkills,
-        maxSkills
+    const prompt = compileWorkerPrompt({
+      task: nextMainTask,
+      policy: currentPolicy,
+      spec: executionSpec,
+      skillLibrary: allSkills,
+      selectedSkillIds: selected.selectedSkillIds,
+      runtimePathsHint,
+      localMemorySummary,
+      globalMemorySummary
+    });
+    await emit({ type: "prompt.compiled", size: prompt.size, ts: nowIso() });
+
+    cycleEvents = [];
+    let mainTurn;
+    let cycleError: string | undefined;
+    try {
+      mainTurn = await mainSdkClient.runThread({
+        thread: mainThread,
+        input: prompt.fullText,
+        onEvent: emitStream
       });
-      const selectedSkillIds = hinted.length > 0
-        ? mergeSkillIds(hinted, [], maxSkills)
-        : fallback.selectedSkillIds;
-      const selectionMode = hinted.length > 0 ? "llm" : fallback.mode;
-      const selectionReason = hinted.length > 0 ? "planner skill hints" : fallback.reason;
+    } catch (runError) {
+      cycleError = runError instanceof Error ? runError.message : String(runError);
+    }
 
+    if (mainTurn && !mainThreadBound && mainTurn.threadId) {
+      await setThreadBinding({ ctx, role: "main", threadId: mainTurn.threadId });
       await emit({
-        type: "skills.selected",
-        agentId: resolvedAgentId,
-        selectedSkillIds,
-        mode: selectionMode,
-        reason: selectionReason,
+        type: "thread.created",
+        role: "main",
+        threadId: mainTurn.threadId,
         ts: nowIso()
       });
+      mainThreadBound = true;
+    }
 
-      const prompt = compileWorkerPrompt({
-        task: nextMainTask,
-        policy: currentPolicy,
-        spec: executionSpec,
-        skillLibrary: allSkills,
-        selectedSkillIds,
-        runtimePathsHint: [
-          `runtime_root: ${runtimeRoot}`,
-          `mcp_runtime_root: ${runtimePaths.mcpDir}`,
-          "For MCP/tool virtualenvs and runtime artifacts, write under mcp_runtime_root instead of project-root .venv-* paths."
-        ].join("\n"),
-        localMemorySummary,
-        globalMemorySummary
-      });
+    usage = mainTurn?.usage ?? usage;
+    const rawOutput = (mainTurn?.outputText || "").trim();
+    const { report, userFacingOutput } = extractSelfReport(rawOutput);
+    const outputForUser = sanitizeUserFacingOutput(userFacingOutput || rawOutput);
+    const { summary, runtimeErrors } = summarizeCycleEvents(cycleEvents);
+    cycleEvents = null;
+    lastTurnContext = {
+      cycle,
+      maxCycles: maxSelfIterCycles,
+      instruction: nextMainTask,
+      workerOutput: rawOutput,
+      userFacingOutput: outputForUser,
+      errorReason: cycleError || report.errorReason || runtimeErrors[0],
+      thinking: report.thinking,
+      nextAction: report.nextAction,
+      eventSummary: summary,
+      runtimeErrors
+    };
 
-      await emit({ type: "prompt.compiled", size: prompt.size, ts: nowIso() });
+    await emit({ type: "iteration.worker.completed", runId: ctx.runId, cycle, ts: nowIso() });
 
-      cycleEvents = [];
-      let mainTurn;
-      let cycleError: string | undefined;
-      try {
-        mainTurn = await mainSdkClient.runThread({
-          thread: mainThread,
-          input: prompt.fullText,
-          onEvent: emitStream
-        });
-      } catch (runError) {
-        cycleError = runError instanceof Error ? runError.message : String(runError);
-      }
-
-      if (mainTurn && !mainThreadBound && mainTurn.threadId) {
-        await setThreadBinding({ ctx, role: "main", threadId: mainTurn.threadId });
-        await emit({
-          type: "thread.created",
-          role: "main",
-          threadId: mainTurn.threadId,
-          ts: nowIso()
-        });
-        mainThreadBound = true;
-      }
-
-      usage = mainTurn?.usage ?? usage;
-      const rawOutput = (mainTurn?.outputText || "").trim();
-      const { report, userFacingOutput } = extractSelfReport(rawOutput);
-      const { summary, runtimeErrors } = summarizeCycleEvents(cycleEvents);
-      cycleEvents = null;
-      lastTurnContext = {
-        cycle,
-        maxCycles: maxSelfIterCycles,
-        instruction: nextMainTask,
-        workerOutput: rawOutput,
-        userFacingOutput,
-        errorReason: cycleError || report.errorReason || runtimeErrors[0],
-        thinking: report.thinking,
-        nextAction: report.nextAction,
-        eventSummary: summary,
-        runtimeErrors
-      };
-
-      await emit({ type: "iteration.worker.completed", runId: ctx.runId, cycle, ts: nowIso() });
-
-      if (!orchestrator) {
-        if (rawOutput) {
-          finalOutput = userFacingOutput || rawOutput;
-          status = "ok";
-        } else {
-          status = "failed";
-          failureKind = "tool";
-          error = cycleError || "worker failed without output";
-        }
-        break;
-      }
-
-      let iterateDecision;
-      try {
-        iterateDecision = await orchestrator.iterate({
-          task: request.task,
-          instruction: nextMainTask,
-          cycle,
-          maxCycles: maxSelfIterCycles,
-          adminCap,
-          currentProfile,
-          workerOutput: rawOutput,
-          userFacingOutput,
-          errorReason: lastTurnContext.errorReason,
-          thinking: lastTurnContext.thinking,
-          nextAction: lastTurnContext.nextAction,
-          eventSummary: lastTurnContext.eventSummary,
-          runtimeErrors: lastTurnContext.runtimeErrors
-        });
-      } catch (iterateError) {
-        status = "failed";
-        failureKind = "tool";
-        error = iterateError instanceof Error ? iterateError.message : String(iterateError);
-        finalOutput = "";
-        break;
-      }
-
-      if (!iterateDecision) {
-        status = "failed";
-        failureKind = "tool";
-        error = "iterate decision output was invalid";
-        finalOutput = "";
-        break;
-      }
-
+    const blocker = classifyBlocker({
+      rawOutput,
+      errorReason: lastTurnContext.errorReason,
+      runtimeErrors,
+      currentProfile
+    });
+    if (blocker.kind !== "none") {
       await emit({
-        type: "iteration.decided",
+        type: "execution.blocked",
         runId: ctx.runId,
-        cycle,
-        decision: iterateDecision.decision,
-        reason: iterateDecision.reason,
-        requestedProfile: iterateDecision.requested_profile,
+        kind: blocker.kind,
+        reason: blocker.reason,
         ts: nowIso()
       });
+    }
 
-      if (iterateDecision.decision === "finish") {
-        finalOutput = iterateDecision.final_reply || userFacingOutput || rawOutput;
-        skipRewrite = Boolean(iterateDecision.final_reply);
-        status = "ok";
-        break;
-      }
+    if (blocker.kind === "environment") {
+      status = "failed";
+      failureKind = "network";
+      error = `Environment blocked execution: ${blocker.reason}`;
+      finalOutput = outputForUser;
+      break;
+    }
 
-      if (iterateDecision.decision === "abort") {
-        await emit({
-          type: "iteration.aborted",
-          runId: ctx.runId,
-          cycle,
-          reason: iterateDecision.reason,
-          ts: nowIso()
-        });
-        finalOutput = iterateDecision.final_reply || userFacingOutput || rawOutput;
-        skipRewrite = Boolean(iterateDecision.final_reply);
+    if (blocker.kind === "permission") {
+      const requestedProfile = requestedProfileFromFailure({
+        reason: blocker.reason,
+        rawOutput,
+        currentProfile
+      });
+      if (!isHigherProfile(requestedProfile, currentProfile)) {
         status = "failed";
         failureKind = "tool";
-        error = iterateDecision.reason;
+        error = `Permission still insufficient at profile=${currentProfile}`;
+        finalOutput = outputForUser;
+        break;
+      }
+      const ok = await applyPermissionDecision({
+        requested_profile: requestedProfile,
+        reason: blocker.reason
+      });
+      if (!ok) {
+        finalOutput = outputForUser;
+        break;
+      }
+      continue;
+    }
+
+    if (blocker.kind === "capability") {
+      repairAttempts += 1;
+      if (repairAttempts > maxRepairAttempts) {
+        status = "failed";
+        failureKind = "tool";
+        error = `repair attempts exceeded budget (${maxRepairAttempts})`;
+        finalOutput = outputForUser;
         break;
       }
 
-      if (iterateDecision.decision === "escalate") {
-        const requestedProfile = iterateDecision.requested_profile || currentProfile;
-        const ok = await applyPermissionDecision({
-          requested_profile: requestedProfile,
-          reason: iterateDecision.reason
+      let recovery: RecoveryDecision;
+      try {
+        recovery = await runRecoveryManager({
+          runId: ctx.runId,
+          task: request.task,
+          reason: lastTurnContext.errorReason || blocker.reason,
+          spec: executionSpec,
+          policy: currentPolicy,
+          skillLibrary: allSkills,
+          sdkClient: mainSdkClient,
+          maxAttempts: maxRepairAttempts,
+          trustScope: appConfig.security.trust_scope,
+          riskyGateEnabled: appConfig.evolution.risky_gate_enabled,
+          askUserGate: askYesNo,
+          emitEvent: emit,
+          emitStream,
+          runtimePathsHint,
+          localMemorySummary,
+          globalMemorySummary
         });
-        if (!ok) {
+      } catch (repairError) {
+        status = "failed";
+        failureKind = "tool";
+        error = `recovery failed: ${repairError instanceof Error ? repairError.message : String(repairError)}`;
+        finalOutput = outputForUser;
+        break;
+      }
+
+      if (recovery.status === "repaired") {
+        if (appConfig.evolution.policy_update_enabled) {
+          const stat = await updateStrategyStats({
+            pathValue: strategyStatsPath,
+            skillId: recovery.skillId,
+            scenarioTag: recovery.scenarioTag,
+            success: true,
+            latencyMs: recovery.elapsedMs
+          });
+          const existingIdx = strategyStatsDoc.records.findIndex(
+            (item) => item.skill_id === stat.skill_id && item.scenario_tag === stat.scenario_tag
+          );
+          if (existingIdx >= 0) {
+            strategyStatsDoc.records[existingIdx] = stat;
+          } else {
+            strategyStatsDoc.records.push(stat);
+          }
           await emit({
-            type: "iteration.aborted",
+            type: "strategy.updated",
             runId: ctx.runId,
-            cycle,
-            reason: "permission escalation denied",
+            skillId: stat.skill_id,
+            scenarioTag: stat.scenario_tag,
+            attempts: stat.attempts,
+            successes: stat.successes,
             ts: nowIso()
           });
-          finalOutput = iterateDecision.final_reply || "";
-          skipRewrite = Boolean(iterateDecision.final_reply);
-          status = "failed";
-          failureKind = "tool";
-          error = "permission escalation denied";
-          break;
         }
-        nextMainTask = iterateDecision.next_instruction || nextMainTask;
+        nextMainTask = [
+          request.task,
+          `Recovery completed with ${recovery.skillId}.`,
+          `Recovery summary: ${recovery.summary}`,
+          "Continue and finish the original task."
+        ].join("\n");
         continue;
       }
 
-      nextMainTask = iterateDecision.next_instruction || nextMainTask;
+      status = "failed";
+      failureKind = "tool";
+      error = recovery.status === "need_user_gate"
+        ? `Recovery blocked by user gate: ${recovery.reason}`
+        : `Recovery unavailable: ${recovery.reason}`;
+      finalOutput = outputForUser;
+      break;
     }
-  }
 
-  }
-
-  if (status === "ok" && !finalOutput) {
-    if (orchestrator && lastTurnContext) {
-      try {
-        const exhaustedDecision = await orchestrator.iterate({
-          task: request.task,
-          instruction: lastTurnContext.instruction,
-          cycle: maxSelfIterCycles,
-          maxCycles: maxSelfIterCycles,
-          adminCap,
-          currentProfile,
-          workerOutput: lastTurnContext.workerOutput,
-          userFacingOutput: lastTurnContext.userFacingOutput,
-          errorReason: `${lastTurnContext.errorReason || "iteration budget exhausted"}`,
-          thinking: lastTurnContext.thinking,
-          nextAction: lastTurnContext.nextAction,
-          eventSummary: lastTurnContext.eventSummary,
-          runtimeErrors: lastTurnContext.runtimeErrors
-        });
-        if (exhaustedDecision?.final_reply) {
-          finalOutput = exhaustedDecision.final_reply;
-          skipRewrite = true;
-        }
-      } catch (exhaustedError) {
-        await emit({
-          type: "run.error",
-          message: `iterate exhausted failed: ${exhaustedError instanceof Error ? exhaustedError.message : String(exhaustedError)}`,
-          ts: nowIso()
-        });
+    if (rawOutput.trim().length === 0 && runtimeErrors.length === 0 && summary === "none") {
+      emptyResponseStreak += 1;
+      if (emptyResponseStreak >= 2) {
+        status = "failed";
+        failureKind = "model";
+        error = "Worker returned empty output in consecutive cycles";
+        await emit({ type: "run.error", message: error, ts: nowIso() });
+        break;
       }
+      nextMainTask = [
+        request.task,
+        "Previous attempt produced empty output.",
+        "Return a concise final answer text now. Do not stay silent."
+      ].join("\n");
+      continue;
     }
-    await emit({ type: "iteration.exhausted", runId: ctx.runId, maxCycles: maxSelfIterCycles, ts: nowIso() });
-    status = "failed";
-    failureKind = "tool";
-    error = `Main loop exited without final answer after ${maxSelfIterCycles} cycles`;
+    emptyResponseStreak = 0;
+
+    if (rawOutput.trim().length > 0 && !lastTurnContext.errorReason && runtimeErrors.length === 0) {
+      finalOutput = outputForUser;
+      status = "ok";
+      break;
+    }
+
+    if (cycle === maxSelfIterCycles) {
+      finalOutput = outputForUser;
+      status = "failed";
+      failureKind = "tool";
+      error = `Main loop exited without final answer after ${maxSelfIterCycles} cycles`;
+      await emit({ type: "iteration.exhausted", runId: ctx.runId, maxCycles: maxSelfIterCycles, ts: nowIso() });
+      break;
+    }
+
+    nextMainTask = report.nextAction
+      ? `${request.task}\n\nRetry focus:\n${report.nextAction}`
+      : request.task;
   }
 
-  if (status === "ok" && finalOutput && orchestrator && !skipWorker && !skipRewrite) {
+  if (status === "ok" && finalOutput && orchestrator) {
     try {
       const rewritten = await orchestrator.rewrite({
         task: request.task,
@@ -861,19 +936,13 @@ export async function runTask(
       });
       if (rewritten?.final_reply?.trim()) {
         finalOutput = rewritten.final_reply.trim();
-      } else if (requireTopLlm) {
-        status = "failed";
-        failureKind = "tool";
-        error = "Top LLM rewrite failed: invalid output";
       }
     } catch (rewriteError) {
-      const message = `rewrite failed: ${rewriteError instanceof Error ? rewriteError.message : String(rewriteError)}`;
-      await emit({ type: "run.error", message, ts: nowIso() });
-      if (requireTopLlm) {
-        status = "failed";
-        failureKind = "tool";
-        error = summarizeTopLlmError(message);
-      }
+      await emit({
+        type: "run.error",
+        message: `rewrite failed: ${rewriteError instanceof Error ? rewriteError.message : String(rewriteError)}`,
+        ts: nowIso()
+      });
     }
   }
 

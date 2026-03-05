@@ -1,7 +1,8 @@
 import { z } from "zod";
-import type { AgentSpec, RunEvent, Skill } from "../../types/contracts.js";
+import type { AgentSpec, RunEvent, Skill, StrategyStatsRecord } from "../../types/contracts.js";
 import type { CodexSdkRuntimeClient } from "../../runtime/codex-sdk/client.js";
 import { renderPromptSection, renderPromptTemplate } from "../../registry/prompt-templates.js";
+import { strategyBonusForSkill } from "../strategy/stats.js";
 
 export type SkillSelectionResult = {
   selectedSkillIds: string[];
@@ -91,8 +92,15 @@ function parseSelection(text: string, skillLibrary: Skill[]): SkillSelectionResu
   return null;
 }
 
-function scoreSkill(taskLower: string, skill: Skill): number {
-  let score = 0;
+function scoreSkill(
+  taskLower: string,
+  skill: Skill,
+  strategy?: {
+    records: StrategyStatsRecord[];
+    scenarioTag: string;
+  }
+): number {
+  let overlapScore = 0;
 
   const fields = [
     skill.id,
@@ -107,7 +115,7 @@ function scoreSkill(taskLower: string, skill: Skill): number {
       continue;
     }
     if (taskLower.includes(field)) {
-      score += 6;
+      overlapScore += 6;
       continue;
     }
 
@@ -117,7 +125,7 @@ function scoreSkill(taskLower: string, skill: Skill): number {
         continue;
       }
       if (taskLower.includes(token)) {
-        score += 1;
+        overlapScore += 1;
       }
     }
   }
@@ -125,38 +133,49 @@ function scoreSkill(taskLower: string, skill: Skill): number {
   const keywords = skill.meta.trigger.keywords || [];
   for (const keyword of keywords) {
     if (taskLower.includes(keyword.toLowerCase())) {
-      score += 4;
+      overlapScore += 4;
     }
   }
 
   for (const alias of skill.meta.selector?.aliases || []) {
     if (taskLower.includes(alias.toLowerCase())) {
-      score += 5;
+      overlapScore += 5;
     }
   }
 
   for (const tag of skill.meta.selector?.tags || []) {
     if (taskLower.includes(tag.toLowerCase())) {
-      score += 2;
+      overlapScore += 2;
     }
   }
 
-  if (skill.meta.repair_role === "repair") {
+  let score = overlapScore;
+  if (overlapScore > 0 && skill.meta.repair_role === "repair") {
     score += 4;
   }
 
   const trustTier = skill.meta.trust_tier || "standard";
-  if (trustTier === "certified") {
-    score += 4;
-  } else if (trustTier === "popular") {
-    score += 2;
-  } else if (trustTier === "untrusted") {
-    score -= 2;
+  if (overlapScore > 0) {
+    if (trustTier === "certified") {
+      score += 4;
+    } else if (trustTier === "popular") {
+      score += 2;
+    } else if (trustTier === "untrusted") {
+      score -= 2;
+    }
   }
 
-  if (skill.meta.popularity) {
+  if (overlapScore > 0 && skill.meta.popularity) {
     score += Math.min(4, Math.floor(skill.meta.popularity.uses / 10));
     score += skill.meta.popularity.success_rate >= 0.8 ? 2 : 0;
+  }
+
+  if (strategy) {
+    score += strategyBonusForSkill({
+      records: strategy.records,
+      skillId: skill.id,
+      scenarioTag: strategy.scenarioTag
+    });
   }
 
   return score;
@@ -168,11 +187,18 @@ export function fallbackSelectSkills(args: {
   maxSkills?: number;
   installIntent?: boolean;
   enforceSkillIds?: string[];
+  strategy?: {
+    records: StrategyStatsRecord[];
+    scenarioTag: string;
+  };
 }): SkillSelectionResult {
   const maxSkills = args.maxSkills ?? 6;
   const taskLower = args.task.toLowerCase();
   const ranked = args.skillLibrary
-    .map((skill) => ({ id: skill.id, score: scoreSkill(taskLower, skill) }))
+    .map((skill) => ({
+      id: skill.id,
+      score: scoreSkill(taskLower, skill, args.strategy)
+    }))
     .sort((a, b) => b.score - a.score);
   const positive = ranked.filter((entry) => entry.score > 0).slice(0, maxSkills).map((entry) => entry.id);
 
@@ -196,9 +222,7 @@ export function fallbackSelectSkills(args: {
       .map((skill) => skill.id)
     : [];
 
-  const fallbackPool = installIntentPick.length > 0
-    ? installIntentPick
-    : args.skillLibrary.slice(0, Math.min(maxSkills, 3)).map((skill) => skill.id);
+  const fallbackPool = installIntentPick.length > 0 ? installIntentPick : [];
   const selected = mergeForcedSkillIds(fallbackPool, args.enforceSkillIds || [], args.skillLibrary, maxSkills);
 
   return {
@@ -206,7 +230,7 @@ export function fallbackSelectSkills(args: {
     mode: "fallback",
     reason: installIntentPick.length > 0
       ? "install-intent fallback prefers repair skills"
-      : "no overlap found, using small default subset"
+      : "no overlap found, selecting no skills"
   };
 }
 

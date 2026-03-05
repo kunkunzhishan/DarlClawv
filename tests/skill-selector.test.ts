@@ -95,3 +95,43 @@ test("fallbackSelectSkills prefers repair skill for install intent", () => {
 
   assert.equal(selected.selectedSkillIds[0], "mcp-recovery");
 });
+
+test("fallbackSelectSkills uses strategy stats to boost proven skills", () => {
+  const skills = [
+    makeSkill("repo-basics", {
+      trigger: { keywords: ["fix"] }
+    }),
+    makeSkill("mcp-recovery", {
+      trigger: { keywords: ["fix"] }
+    })
+  ];
+
+  const selected = fallbackSelectSkills({
+    task: "fix this tool issue",
+    skillLibrary: skills,
+    strategy: {
+      scenarioTag: "general",
+      records: [
+        {
+          skill_id: "mcp-recovery",
+          scenario_tag: "general",
+          attempts: 8,
+          successes: 8,
+          avg_latency_ms: 400,
+          updated_at: "2026-03-05T00:00:00Z"
+        }
+      ]
+    }
+  });
+
+  assert.equal(selected.selectedSkillIds[0], "mcp-recovery");
+});
+
+test("fallbackSelectSkills returns empty list when there is no overlap", () => {
+  const selected = fallbackSelectSkills({
+    task: "just answer hello",
+    skillLibrary: [makeSkill("repo-basics"), makeSkill("mcp-recovery")]
+  });
+
+  assert.deepEqual(selected.selectedSkillIds, []);
+});

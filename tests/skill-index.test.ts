@@ -1,15 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadSkillIndex } from "../src/registry/skill-index.js";
 
 test("loadSkillIndex parses recommended sources and trust fields", async () => {
   const configRoot = await mkdtemp(path.join(os.tmpdir(), "darlclawv-skill-index-"));
-  await mkdir(path.join(configRoot, "skills"), { recursive: true });
+  const indexPath = path.join(configRoot, "skills-index.yaml");
+  process.env.MYDARL_SKILL_INDEX_PATH = indexPath;
   await writeFile(
-    path.join(configRoot, "skills", "index.yaml"),
+    indexPath,
     `version: 1
 updated_at: "2026-03-01T00:00:00.000Z"
 recommended_sources:
@@ -36,4 +37,5 @@ skills:
   assert.equal(doc.data.recommended_sources.length, 1);
   assert.equal(doc.data.recommended_sources[0]?.id, "openai-skills-github");
   assert.equal(doc.data.skills["mcp-recovery"]?.repair_role, "repair");
+  delete process.env.MYDARL_SKILL_INDEX_PATH;
 });
