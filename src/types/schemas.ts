@@ -168,10 +168,8 @@ export const appConfigSchema = z.object({
     .default({}),
   workflow: z
     .object({
-      max_capability_attempts: z.number().int().positive().default(1),
-      capability_timeout_ms: z.number().int().positive().default(600000),
-      enable_skill_manager: z.boolean().default(false),
-      allow_promote_to_config_skills: z.boolean().default(true)
+      max_self_iter_cycles: z.number().int().positive().default(6),
+      timeout_ms: z.number().int().positive().default(600000)
     })
     .default({}),
   security: z

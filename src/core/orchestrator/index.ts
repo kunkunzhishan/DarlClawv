@@ -9,6 +9,7 @@ import type {
   Skill,
   TopLlmApprovalDecision,
   TopLlmDistillDecision,
+  TopLlmIterateDecision,
   TopLlmPlanDecision,
   TopLlmRewriteDecision
 } from "../../types/contracts.js";
@@ -33,6 +34,14 @@ const approvalSchema = z.object({
   decision: z.enum(["grant", "deny", "escalate"]),
   profile: z.enum(["safe", "workspace", "full"]),
   reason: z.string().min(1)
+});
+
+const iterateSchema = z.object({
+  decision: z.enum(["retry", "escalate", "finish", "abort"]),
+  reason: z.string().min(1),
+  next_instruction: optionalNonEmpty,
+  requested_profile: z.enum(["safe", "workspace", "full"]).optional(),
+  final_reply: optionalNonEmpty
 });
 
 const rewriteSchema = z.object({
@@ -195,6 +204,21 @@ export type Orchestrator = {
     localMemorySummary?: string;
     globalMemorySummary?: string;
   }) => Promise<TopLlmPlanDecision | null>;
+  iterate: (args: {
+    task: string;
+    instruction: string;
+    cycle: number;
+    maxCycles: number;
+    adminCap: PermissionProfile;
+    currentProfile: PermissionProfile;
+    workerOutput: string;
+    userFacingOutput: string;
+    errorReason?: string;
+    thinking?: string;
+    nextAction?: string;
+    eventSummary?: string;
+    runtimeErrors?: string[];
+  }) => Promise<TopLlmIterateDecision | null>;
   approve: (args: {
     task: string;
     request: PermissionRequest;
@@ -244,6 +268,41 @@ export function createOrchestrator(appConfig: AppConfig): Orchestrator {
         direct_reply: parsed.direct_reply,
         skill_hints: parsed.skill_hints || [],
         required_profile: parsed.required_profile || "safe"
+      };
+    },
+
+    async iterate(args) {
+      const commonContext = buildCommonContext({
+        adminCap: args.adminCap,
+        currentProfile: args.currentProfile
+      });
+      const prompt = renderPromptTemplate("orchestrator/iterate", {
+        common_context: commonContext,
+        task: args.task,
+        instruction: args.instruction,
+        cycle: String(args.cycle),
+        max_cycles: String(args.maxCycles),
+        worker_output: args.workerOutput,
+        user_facing_output: args.userFacingOutput,
+        error_reason: args.errorReason || "none",
+        thinking: args.thinking || "none",
+        next_action: args.nextAction || "none",
+        event_summary: args.eventSummary || "none",
+        runtime_errors: args.runtimeErrors && args.runtimeErrors.length > 0
+          ? args.runtimeErrors.join("\n")
+          : "none"
+      });
+      const text = await client.complete(prompt);
+      const parsed = parseJsonWithSchema(text, iterateSchema);
+      if (!parsed) {
+        throw new Error(`iterate invalid output: ${truncateForError(text)}`);
+      }
+      return {
+        decision: parsed.decision,
+        reason: parsed.reason,
+        next_instruction: parsed.next_instruction,
+        requested_profile: parsed.requested_profile,
+        final_reply: parsed.final_reply
       };
     },
 

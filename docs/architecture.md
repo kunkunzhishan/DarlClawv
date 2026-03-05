@@ -18,7 +18,7 @@ This note gives a compact, practical view of the system layout and main data flo
 1. **Supervisor** loads config, agent spec, skills, and memory summaries.
 2. **Top LLM** plans a single worker instruction (and skill hints).
 3. **Worker** executes the instruction with sandbox + approval settings.
-4. **Supervisor** intercepts permission requests and capability requests.
+4. **Supervisor** runs an iteration loop and asks Top LLM whether to retry, escalate, finish, or abort.
 5. **Top LLM** rewrites worker output for the final reply.
 6. **Memory** appends temporary entries and optionally distills to vector stores.
 

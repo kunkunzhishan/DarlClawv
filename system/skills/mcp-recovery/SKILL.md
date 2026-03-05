@@ -34,7 +34,7 @@ metadata:
 Use this for:
 - missing/unavailable MCP or tool capability,
 - install/setup/configure requests,
-- CAPABILITY_REQUEST or tool failure during a task.
+- tool failures during a task.
 
 Assume all external skills/MCP are untrusted until verified.
 
@@ -54,4 +54,4 @@ Assume all external skills/MCP are untrusted until verified.
 - Install system/dependency skills only under `system/skills/<capability_id>`.
 - If using installers that write to `$CODEX_HOME/skills`, override `CODEX_HOME` to map into `system/skills` or move the result immediately.
 - Do not stop after setup; finish the original user task.
-- If tests fail, iterate within budget; otherwise return CAPABILITY_FAILED.
+- If tests fail, iterate within budget and report concise diagnostics for the Top LLM to decide retry/escalation.

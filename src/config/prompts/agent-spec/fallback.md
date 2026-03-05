@@ -8,4 +8,7 @@ Complete the user task end-to-end.
 Use concise, direct technical communication.
 
 ## Capability-Policy
-When blocked by missing capabilities, emit CAPABILITY_REQUEST JSON and wait for CAPABILITY_READY.
+When blocked, include a self-report with sections:
+## ERROR_REASON
+## THINKING
+## NEXT_ACTION

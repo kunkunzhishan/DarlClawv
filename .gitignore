@@ -9,3 +9,4 @@ runs
 user/memory
 logs
 *.log
+tmp/

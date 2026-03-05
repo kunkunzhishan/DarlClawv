@@ -244,7 +244,7 @@ function html(): string {
     <aside class="sidebar">
       <div class="head">
         <h1 class="title">DarlClawv Observatory</h1>
-        <div class="sub">Run timeline, capability loop, memory and guard violations</div>
+        <div class="sub">Run timeline, memory and guard violations</div>
         <div class="controls">
           <button class="btn" id="refreshBtn">Refresh</button>
           <button class="btn" id="autoBtn">Auto: On</button>
@@ -261,7 +261,6 @@ function html(): string {
       <div class="cards">
         <div class="card"><h3>Status</h3><div id="kStatus" class="kpi">-</div></div>
         <div class="card"><h3>Duration</h3><div id="kDuration" class="kpi">-</div></div>
-        <div class="card"><h3>Capability</h3><div id="kCapability" class="kpi">-</div></div>
         <div class="card"><h3>Guard Errors</h3><div id="kGuard" class="kpi">-</div></div>
       </div>
       <div class="detail-grid">
@@ -272,10 +271,6 @@ function html(): string {
         <section class="panel">
           <h2>Phases & Timeline</h2>
           <div class="scroll mono" id="timelineBox">-</div>
-        </section>
-        <section class="panel">
-          <h2>Capability Activity</h2>
-          <div class="scroll mono" id="capabilityBox">-</div>
         </section>
         <section class="panel">
           <h2>Tools & Memory</h2>
@@ -316,25 +311,6 @@ function html(): string {
       const rem = sec % 60;
       if (min === 0) return sec + "s";
       return min + "m " + rem + "s";
-    }
-
-    function eventCounts(events) {
-      const map = new Map();
-      for (const e of events || []) {
-        map.set(e.type, (map.get(e.type) || 0) + 1);
-      }
-      return map;
-    }
-
-    function summarizeCapabilities(events) {
-      const byCap = new Map();
-      for (const e of events || []) {
-        if (!(e.type.startsWith("capability.") || e.type.startsWith("repair."))) continue;
-        const id = e.capabilityId || e.capability_id || "-";
-        if (!byCap.has(id)) byCap.set(id, []);
-        byCap.get(id).push(e);
-      }
-      return byCap;
     }
 
     function guardViolations(events) {
@@ -394,8 +370,6 @@ function html(): string {
     async function loadRun(runId) {
       const data = await api("/api/runs/" + encodeURIComponent(runId));
       const events = data.events || [];
-      const counts = eventCounts(events);
-      const caps = summarizeCapabilities(events);
       const guard = guardViolations(events);
 
       const duration = data.summary.finishedAt
@@ -404,9 +378,6 @@ function html(): string {
 
       el("kStatus").innerHTML = '<span class="' + statusClass(data.summary.status) + '">' + esc(data.summary.status) + '</span>';
       el("kDuration").textContent = humanMs(duration);
-      el("kCapability").textContent = String((counts.get("capability.requested") || 0)) + " req / " +
-                                       String((counts.get("capability.ready") || 0)) + " ready / " +
-                                       String((counts.get("repair.completed") || 0)) + " repaired";
       el("kGuard").innerHTML = guard.length > 0
         ? '<span class="danger">' + guard.length + "</span>"
         : '<span class="ok-text">0</span>';
@@ -425,22 +396,6 @@ function html(): string {
         '<div><b>task:</b></div><div>' + esc(req.task || "-") + '</div>';
 
       el("timelineBox").innerHTML = buildTimeline(events);
-
-      if (caps.size === 0) {
-        el("capabilityBox").innerHTML = "<div class='muted'>No capability activity.</div>";
-      } else {
-        const rows = [];
-        for (const [capId, items] of caps.entries()) {
-          rows.push("<div><b>" + esc(capId) + "</b></div>");
-          for (const item of items) {
-            rows.push(
-              '<div class="small">' + esc(item.ts || "-") + "  " + esc(item.type) + "  " + esc(JSON.stringify(item)) + "</div>"
-            );
-          }
-          rows.push("<hr style='border:0;border-top:1px solid #243146;margin:8px 0;' />");
-        }
-        el("capabilityBox").innerHTML = rows.join("");
-      }
 
       const toolRows = [];
       for (const e of events) {

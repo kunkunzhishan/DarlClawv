@@ -53,10 +53,8 @@ function baseConfig(root: string): AppConfig {
       port: 4789
     },
     workflow: {
-      max_capability_attempts: 1,
-      capability_timeout_ms: 600000,
-      enable_skill_manager: false,
-      allow_promote_to_config_skills: true
+      max_self_iter_cycles: 6,
+      timeout_ms: 600000
     },
     security: {
       default_admin_cap: "workspace"
