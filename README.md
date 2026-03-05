@@ -10,6 +10,7 @@ Conversation-first local all-purpose AI assistant.
 - Built-in memory system: temporary context + vector recall.
 - Self-iteration loop: Top LLM decides retry/escalate/finish/abort.
 - Worker runs in a sandbox by default, with explicit escalation flow.
+- Channel hub: connect Slack/Feishu bots to the same runTask pipeline.
 
 ## Architecture
 
@@ -31,6 +32,16 @@ Examples:
 - "Split this requirement into 3 steps and execute step 1 first."
 - "Analyze risks, then implement a safe patch."
 - "If capability is missing, repair and continue."
+
+## Channel Hub
+
+Run the Slack/Feishu channel hub:
+
+```bash
+darlclawv channels run
+```
+
+Channel definitions live in `src/config/channels.yaml` (override with `user/channels.yaml`).
 
 ## Skills-Driven Execution
 

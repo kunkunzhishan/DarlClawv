@@ -1,6 +1,10 @@
 import type { AgentSpec, CompiledPrompt, Policy, Skill } from "../../types/contracts.js";
 import { renderPromptSection, renderPromptTemplate } from "../../registry/prompt-templates.js";
 
+function filterPromptSkills(skills: Skill[]): Skill[] {
+  return skills.filter((skill) => !skill.meta.channel);
+}
+
 function renderSkillSection(skill: Skill): string {
   const packageRoot = skill.package?.root ?? skill.path;
   const entrypoint = skill.package?.entrypoint;
@@ -78,9 +82,10 @@ export function compileAgentSpecPrompt(args: {
   const allowlistedSkills = args.spec.skillWhitelist.length > 0
     ? args.skillLibrary.filter((skill) => args.spec.skillWhitelist.includes(skill.id))
     : args.skillLibrary;
+  const promptSkills = filterPromptSkills(allowlistedSkills);
   const relevantSkills = Array.isArray(args.selectedSkillIds)
-    ? allowlistedSkills.filter((skill) => args.selectedSkillIds?.includes(skill.id))
-    : allowlistedSkills;
+    ? promptSkills.filter((skill) => args.selectedSkillIds?.includes(skill.id))
+    : promptSkills;
 
   const system = renderPromptTemplate("prompt-compiler/compile-agent-system", {
     persona: args.spec.persona.trim(),
@@ -117,9 +122,10 @@ export function compileWorkerPrompt(args: {
   const allowlistedSkills = args.spec.skillWhitelist.length > 0
     ? args.skillLibrary.filter((skill) => args.spec.skillWhitelist.includes(skill.id))
     : args.skillLibrary;
+  const promptSkills = filterPromptSkills(allowlistedSkills);
   const relevantSkills = Array.isArray(args.selectedSkillIds)
-    ? allowlistedSkills.filter((skill) => args.selectedSkillIds?.includes(skill.id))
-    : allowlistedSkills;
+    ? promptSkills.filter((skill) => args.selectedSkillIds?.includes(skill.id))
+    : promptSkills;
 
   const system = renderPromptTemplate("prompt-compiler/compile-worker-system", {
     sandbox_mode: args.policy.sandbox.mode,

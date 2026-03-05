@@ -52,6 +52,13 @@ function baseConfig(root: string): AppConfig {
       host: "127.0.0.1",
       port: 4789
     },
+    channels: {
+      enabled: false,
+      config_path: "src/config/channels.yaml",
+      state_db_path: path.join(root, "channels", "channels.db"),
+      poll_interval_ms: 2000,
+      max_inflight: 2
+    },
     workflow: {
       execution_mode: "execute-first",
       autonomy_profile: "aggressive",

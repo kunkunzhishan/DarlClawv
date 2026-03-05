@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { runTask } from "../core/supervisor/index.js";
+import { runChannelHub } from "../channels/hub.js";
 import {
   readRecentGroupVectorMemory,
   readRecentPersonalVectorMemory,
@@ -10,6 +11,7 @@ import {
 } from "../core/memory/store.js";
 import { loadAgentSpec, listAgentSpecIds } from "../registry/agent-spec.js";
 import { loadAppConfig } from "../registry/index.js";
+import { loadChannelsConfig } from "../channels/config.js";
 import { getRunDetails, listRuns } from "../storage/index.js";
 import { loadDotEnv } from "../utils/env.js";
 import { ensureWebObservatory } from "../web/autostart.js";
@@ -91,6 +93,7 @@ program
             error: result.result.error,
             failureKind: result.result.failureKind,
             exitCode: result.result.exitCode,
+            threadId: result.result.threadId,
             usage: result.result.usage
           },
           null,
@@ -199,6 +202,36 @@ program
       return;
     }
     await startWebServer(port, String(opts.host || "127.0.0.1"));
+  });
+
+const channels = program.command("channels").description("Channel integration commands");
+
+channels
+  .command("run")
+  .action(async () => {
+    const appConfig = await loadAppConfig();
+    if (!appConfig.channels.enabled) {
+      console.error("channels are disabled in app config");
+      process.exitCode = 1;
+      return;
+    }
+    await runChannelHub();
+    console.error("channels hub running");
+    await new Promise(() => undefined);
+  });
+
+channels
+  .command("list")
+  .action(async () => {
+    const appConfig = await loadAppConfig();
+    const configDoc = await loadChannelsConfig(appConfig);
+    if (configDoc.data.channels.length === 0) {
+      console.log("no channels configured");
+      return;
+    }
+    for (const channel of configDoc.data.channels) {
+      console.log(`${channel.id} kind=${channel.kind} enabled=${channel.enabled !== false}`);
+    }
   });
 
 runs.command("list").action(async () => {

@@ -27,6 +27,11 @@ export type SkillMeta = {
     keywords?: string[];
     file_globs?: string[];
   };
+  channel?: {
+    kind: string;
+    entrypoint?: string;
+    requires_env?: string[];
+  };
   selector?: {
     short?: string;
     aliases?: string[];
@@ -144,6 +149,13 @@ export type AppConfig = {
     host: string;
     port: number;
   };
+  channels: {
+    enabled: boolean;
+    config_path: string;
+    state_db_path: string;
+    poll_interval_ms: number;
+    max_inflight: number;
+  };
   workflow: {
     execution_mode: "execute-first";
     autonomy_profile: AutonomyProfile;
@@ -172,6 +184,7 @@ export type RunRequest = {
   // Deprecated: runMode retained for backward compatibility.
   runMode?: RunMode;
   autonomyProfile?: AutonomyProfile;
+  threadId?: string;
   workflowId?: string;
   taskWorkspace?: string;
   controlPlaneRoot?: string;
@@ -397,6 +410,7 @@ export type EngineRunResult = {
     output_tokens?: number;
     total_tokens?: number;
   };
+  threadId?: string;
   error?: string;
   exitCode?: number;
   failureKind?: FailureKind;

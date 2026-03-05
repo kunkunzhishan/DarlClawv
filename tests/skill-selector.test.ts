@@ -96,6 +96,20 @@ test("fallbackSelectSkills prefers repair skill for install intent", () => {
   assert.equal(selected.selectedSkillIds[0], "mcp-recovery");
 });
 
+test("fallbackSelectSkills ignores channel skills", () => {
+  const skills = [
+    makeSkill("repo-basics", { trigger: { keywords: ["repo"] } }),
+    makeSkill("channel-slack", { channel: { kind: "slack" } })
+  ];
+
+  const selected = fallbackSelectSkills({
+    task: "repo cleanup",
+    skillLibrary: skills
+  });
+
+  assert.equal(selected.selectedSkillIds[0], "repo-basics");
+});
+
 test("fallbackSelectSkills uses strategy stats to boost proven skills", () => {
   const skills = [
     makeSkill("repo-basics", {

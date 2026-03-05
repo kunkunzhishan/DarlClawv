@@ -40,6 +40,12 @@ web:
   autostart: true
   host: 127.0.0.1
   port: 4789
+channels:
+  enabled: true
+  config_path: user/channels.yaml
+  state_db_path: user/channels/channels.db
+  poll_interval_ms: 2000
+  max_inflight: 4
 workflow:
   execution_mode: execute-first
   autonomy_profile: aggressive

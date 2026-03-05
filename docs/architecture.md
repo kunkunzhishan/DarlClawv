@@ -13,6 +13,7 @@ This note gives a compact, practical view of the system layout and main data flo
 - `system/` — system-owned skills and defaults.
 - `.darlclawv-runtime/` — runtime scratch space (sessions, runtime skills, MCP staging, logs).
 - `runs/` — run logs, snapshots, and event traces.
+- `src/channels/` — channel hub, router, scheduler, and adapters.
 
 ## Main Runtime Flow
 1. **Supervisor** loads config, agent spec, skills, and memory summaries.
@@ -41,3 +42,8 @@ Permissions are mapped to fixed profiles:
 - **full**: full access + network
 
 The supervisor is the single place where permission profiles become Codex ThreadOptions.
+
+## Channels (Slack/Feishu)
+- Channel hub loads channel configs and channel skills.
+- Messages are routed through the same `runTask` pipeline.
+- SQLite stores channels, chats, messages, and scheduled tasks.

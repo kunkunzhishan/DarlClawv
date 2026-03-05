@@ -69,6 +69,7 @@ function mergeSkill(base: Skill, markdownHint: Skill | undefined): Skill {
         keywords: mergeUniqueStrings(base.meta.trigger.keywords, markdownHint.meta.trigger.keywords),
         file_globs: mergeUniqueStrings(base.meta.trigger.file_globs, markdownHint.meta.trigger.file_globs)
       },
+      channel: markdownHint.meta.channel ?? base.meta.channel,
       selector:
         mergedSelector && (
           Boolean(mergedSelector.short) ||
@@ -457,6 +458,7 @@ export async function loadSkills(configRoot = path.resolve("src/config")): Promi
           protocol: "codex-skill-v1" as const,
           inject_mode: frontmatter.metadata.inject_mode,
           trigger: mergedTrigger,
+          channel: frontmatter.metadata?.channel,
           selector: frontmatter.metadata?.selector,
           limits: frontmatter.metadata?.limits,
           summary: frontmatter.metadata?.summary,

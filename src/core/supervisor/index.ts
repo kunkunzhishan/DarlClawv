@@ -519,18 +519,22 @@ export async function runTask(
     mainThreadBound = false;
   };
 
-  let mainThread = workflow.threadBindings.main
-    ? mainSdkClient.resumeThread(workflow.threadBindings.main)
+  const initialThreadId = workflow.threadBindings.main || request.threadId;
+  let mainThread = initialThreadId
+    ? mainSdkClient.resumeThread(initialThreadId)
     : mainSdkClient.startThread();
-  let mainThreadBound = Boolean(workflow.threadBindings.main);
+  let mainThreadBound = Boolean(initialThreadId);
 
-  if (workflow.threadBindings.main) {
+  if (initialThreadId) {
     await emit({
       type: "thread.resumed",
       role: "main",
-      threadId: workflow.threadBindings.main,
+      threadId: initialThreadId,
       ts: nowIso()
     });
+  }
+  if (!workflow.threadBindings.main && request.threadId) {
+    await setThreadBinding({ ctx, role: "main", threadId: request.threadId });
   }
 
   await setWorkflowPhase(ctx, "running-main");
@@ -971,6 +975,7 @@ export async function runTask(
     status,
     outputText: finalOutput,
     usage,
+    threadId: mainThread.id ?? undefined,
     error,
     failureKind
   };

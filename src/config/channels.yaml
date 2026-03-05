@@ -1,0 +1,24 @@
+version: 1
+channels:
+  - id: slack-default
+    kind: slack
+    enabled: false
+    skill_id: channel-slack
+    agent_id: default
+    trigger:
+      mode: mention-or-prefix
+      prefix: "claw "
+    config:
+      bot_token_env: SLACK_BOT_TOKEN
+      app_token_env: SLACK_APP_TOKEN
+  - id: feishu-default
+    kind: feishu
+    enabled: false
+    skill_id: channel-feishu
+    agent_id: default
+    trigger:
+      mode: mention-or-prefix
+      prefix: "claw "
+    config:
+      app_id_env: FEISHU_APP_ID
+      app_secret_env: FEISHU_APP_SECRET

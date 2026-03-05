@@ -10,6 +10,10 @@ export type SkillSelectionResult = {
   reason?: string;
 };
 
+function filterSelectableSkills(skills: Skill[]): Skill[] {
+  return skills.filter((skill) => !skill.meta.channel);
+}
+
 const selectionSchema = z.object({
   selected_skill_ids: z.array(z.string()).default([]),
   reason: z.string().optional()
@@ -192,9 +196,10 @@ export function fallbackSelectSkills(args: {
     scenarioTag: string;
   };
 }): SkillSelectionResult {
+  const filtered = filterSelectableSkills(args.skillLibrary);
   const maxSkills = args.maxSkills ?? 6;
   const taskLower = args.task.toLowerCase();
-  const ranked = args.skillLibrary
+  const ranked = filtered
     .map((skill) => ({
       id: skill.id,
       score: scoreSkill(taskLower, skill, args.strategy)
@@ -203,7 +208,7 @@ export function fallbackSelectSkills(args: {
   const positive = ranked.filter((entry) => entry.score > 0).slice(0, maxSkills).map((entry) => entry.id);
 
   if (positive.length > 0) {
-    const selected = mergeForcedSkillIds(positive, args.enforceSkillIds || [], args.skillLibrary, maxSkills);
+    const selected = mergeForcedSkillIds(positive, args.enforceSkillIds || [], filtered, maxSkills);
     return {
       selectedSkillIds: selected,
       mode: "fallback",
@@ -212,7 +217,7 @@ export function fallbackSelectSkills(args: {
   }
 
   const installIntentPick = args.installIntent
-    ? args.skillLibrary
+    ? filtered
       .filter((skill) => skill.meta.repair_role === "repair")
       .sort((a, b) => {
         const order = (v: Skill["meta"]["trust_tier"]) =>
@@ -223,7 +228,7 @@ export function fallbackSelectSkills(args: {
     : [];
 
   const fallbackPool = installIntentPick.length > 0 ? installIntentPick : [];
-  const selected = mergeForcedSkillIds(fallbackPool, args.enforceSkillIds || [], args.skillLibrary, maxSkills);
+  const selected = mergeForcedSkillIds(fallbackPool, args.enforceSkillIds || [], filtered, maxSkills);
 
   return {
     selectedSkillIds: selected,
@@ -297,7 +302,8 @@ export async function selectSkillsForTask(args: {
   installIntent?: boolean;
   enforceSkillIds?: string[];
 }): Promise<SkillSelectionResult> {
-  if (args.skillLibrary.length === 0) {
+  const filtered = filterSelectableSkills(args.skillLibrary);
+  if (filtered.length === 0) {
     return {
       selectedSkillIds: [],
       mode: "fallback",
@@ -309,7 +315,7 @@ export async function selectSkillsForTask(args: {
   const prompt = buildSelectorPrompt({
     task: args.task,
     spec: args.spec,
-    skillLibrary: args.skillLibrary,
+    skillLibrary: filtered,
     localMemorySummary: args.localMemorySummary,
     globalMemorySummary: args.globalMemorySummary,
     maxSkills
@@ -323,14 +329,14 @@ export async function selectSkillsForTask(args: {
       emitDeltaEvents: false,
       onEvent: args.onEvent
     });
-    const parsed = parseSelection(turn.outputText, args.skillLibrary);
+    const parsed = parseSelection(turn.outputText, filtered);
     if (parsed) {
       return {
         ...parsed,
         selectedSkillIds: mergeForcedSkillIds(
           parsed.selectedSkillIds.slice(0, maxSkills),
           args.enforceSkillIds || [],
-          args.skillLibrary,
+          filtered,
           maxSkills
         )
       };
@@ -345,7 +351,7 @@ export async function selectSkillsForTask(args: {
 
   return fallbackSelectSkills({
     task: args.task,
-    skillLibrary: args.skillLibrary,
+    skillLibrary: filtered,
     maxSkills,
     installIntent: args.installIntent,
     enforceSkillIds: args.enforceSkillIds

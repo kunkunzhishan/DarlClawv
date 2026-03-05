@@ -131,6 +131,7 @@ export async function loadSkillMarkdownLibrary(configRoot = path.resolve("src/co
 
     const triggerMeta = toRecord(section.metadata.trigger);
     const selectorMeta = toRecord(section.metadata.selector);
+    const channelMeta = toRecord(section.metadata.channel);
     const selectorAliases = mergeUniqueStrings(
       toStringArray(selectorMeta.aliases),
       toStringArray(section.metadata.aliases)
@@ -139,6 +140,16 @@ export async function loadSkillMarkdownLibrary(configRoot = path.resolve("src/co
     const selectorShort = toString(selectorMeta.short) ?? toString(section.metadata.short);
     const selectorUsageHint = toString(selectorMeta.usage_hint) ?? toString(section.metadata.usage_hint);
     const limitsMeta = toRecord(section.metadata.limits);
+    const channelKind = toString(channelMeta.kind);
+    const channelEntrypoint = toString(channelMeta.entrypoint);
+    const channelRequiresEnv = toStringArray(channelMeta.requires_env);
+    const channel = channelKind
+      ? {
+          kind: channelKind,
+          entrypoint: channelEntrypoint,
+          requires_env: channelRequiresEnv.length > 0 ? channelRequiresEnv : undefined
+        }
+      : undefined;
 
     const description =
       (typeof section.metadata.description === "string" && section.metadata.description.trim()) ||
@@ -153,6 +164,7 @@ export async function loadSkillMarkdownLibrary(configRoot = path.resolve("src/co
         keywords: toStringArray(triggerMeta.keywords),
         file_globs: toStringArray(triggerMeta.file_globs)
       },
+      channel,
       selector:
         selectorShort || selectorUsageHint || selectorAliases.length > 0 || selectorTags.length > 0
           ? {

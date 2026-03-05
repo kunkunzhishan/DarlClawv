@@ -17,6 +17,13 @@ export const skillMetaSchema = z.object({
       file_globs: z.array(z.string()).optional()
     })
     .default({}),
+  channel: z
+    .object({
+      kind: z.string().min(1),
+      entrypoint: z.string().min(1).optional(),
+      requires_env: z.array(z.string()).optional()
+    })
+    .optional(),
   selector: z
     .object({
       short: z.string().optional(),
@@ -131,6 +138,15 @@ export const appConfigSchema = z.object({
       autostart: z.boolean().default(true),
       host: z.string().min(1).default("127.0.0.1"),
       port: z.number().int().min(1).max(65535).default(4789)
+    })
+    .default({}),
+  channels: z
+    .object({
+      enabled: z.boolean().default(true),
+      config_path: z.string().min(1).default("src/config/channels.yaml"),
+      state_db_path: z.string().min(1).default("user/channels/channels.db"),
+      poll_interval_ms: z.number().int().positive().default(2000),
+      max_inflight: z.number().int().positive().default(4)
     })
     .default({}),
   workflow: z
